@@ -1,0 +1,62 @@
+{
+  "name": "TRMNL Image Webhook - Python",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "21478d4c-27c4-4c74-9ac9-def4ee246fb5",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "21478d4c-27c4-4c74-9ac9-def4ee246fb5"
+    },
+    {
+      "parameters": {
+        "command": "python3",
+        "pythonCode": "import io\nimport base64\nimport hashlib\nimport zlib\nimport struct\nimport json\n\ndef crc32(data):\n    crc = 0xFFFFFFFF\n    for byte in data:\n        crc ^= byte\n        for _ in range(8):\n            crc = (crc >> 1) ^ 0xEDB88320 if crc & 1 else crc >> 1\n    return crc ^ 0xFFFFFFFF\n\ndef create_png(width, height, pixels):\n    def png_chunk(chunk_type, data):\n        chunk_len = struct.pack('>I', len(data))\n        chunk_crc = struct.pack('>I', crc32(chunk_type + data))\n        return chunk_len + chunk_type + data + chunk_crc\n    \n    signature = b'\\x89PNG\\r\\n\\x1a\\n'\n    ihdr_data = struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)\n    ihdr = png_chunk(b'IHDR', ihdr_data)\n    \n    raw_data = b''\n    for row in pixels:\n        raw_data += b'\\x00' + bytes(row)\n    \n    compressed = zlib.compress(raw_data, 9)\n    idat = png_chunk(b'IDAT', compressed)\n    iend = png_chunk(b'IEND', b'')\n    \n    return signature + ihdr + idat + iend\n\nwidth = 800\nheight = 480\n\npixels = []\nfor y in range(height):\n    row = []\n    for x in range(width):\n        row.extend([255, 255, 255])\n    pixels.append(row)\n\nrect_w = 300\nrect_h = 50\nrect_x = (width - rect_w) // 2\nrect_y = (height - rect_h) // 2\n\nfor y in range(rect_y, rect_y + rect_h):\n    for x in range(rect_x, rect_x + rect_w):\n        pixels[y][x*3:x*3+3] = [0, 0, 0]\n\npng_data = create_png(width, height, pixels)\nsha256_hash = hashlib.sha256(png_data).hexdigest()\nbase64_image = base64.b64encode(png_data).decode('utf-8')\n\nresult = {\"image\": base64_image, \"checksum\": sha256_hash}\nprint(json.dumps(result))"
+      },
+      "id": "python",
+      "name": "Generate Image",
+      "type": "n8n-nodes-base.python",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = $input.first().json.output;\nconst parsed = JSON.parse(output);\nreturn parsed;"
+      },
+      "id": "parseJson",
+      "name": "Parse JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      },
+      "id": "respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [850, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Generate Image", "type": "main", "index": 0 }]]
+    },
+    "Generate Image": {
+      "main": [[{ "node": "Parse JSON", "type": "main", "index": 0 }]]
+    },
+    "Parse JSON": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    }
+  }
+}
