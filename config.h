@@ -3,6 +3,7 @@
 
 #define WIFI_SSID "FT12"
 #define API_URL "https://n8nflow.duckdns.org/webhook/21478d4c-27c4-4c74-9ac9-def4ee246fb5"
+#define DIRECT_IMAGE_URL "https://placehold.co/800x480/000000/ffffff.png"
 
 #define REFRESH_INTERVAL_MINUTES 5
 
