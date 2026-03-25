@@ -24,14 +24,7 @@ PNG png;
 String storedChecksum = "";
 bool hasValidImage = false;
 
-unsigned long lastFetchTime = 0;
-const unsigned long FETCH_INTERVAL = REFRESH_INTERVAL_MINUTES * 60 * 1000;
-bool imagePending = true; // fetch image as soon as WiFi connects
-static uint8_t pngBuffer[8192];
-
-unsigned long lastStatusUpdate = 0;
-const unsigned long STATUS_CHECK_INTERVAL = 2000;
-
+const uint64_t SLEEP_DURATION_US = (uint64_t)REFRESH_INTERVAL_MINUTES * 60ULL * 1000000ULL;
 // Y-positioner för varje rad (förberäknade)
 #define ROW_TITLE   20
 #define ROW_SSID    66
@@ -203,28 +196,56 @@ String getBasicAuthHeader() {
   return String("Basic ") + String((char*)encoded);
 }
 
-bool fetchImageFromAPI(String& imageData, String& checksum) {
+bool fetchChecksumFromAPI(String& checksum) {
   HTTPClient http;
   WiFiClientSecure client;
   client.setInsecure();
-  Serial.println("Fetching image from API...");
-  Serial.println(API_URL);
   http.begin(client, API_URL);
   http.addHeader("Authorization", getBasicAuthHeader());
   http.addHeader("Accept", "application/json");
-  int httpCode = http.GET();
-  if (httpCode == HTTP_CODE_OK) {
-    String payload = http.getString();
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("HTTP error: %d\n", code);
     http.end();
-    DynamicJsonDocument doc(payload.length() + 256);
-    DeserializationError error = deserializeJson(doc, payload);
-    if (error) { Serial.print("JSON parse error: "); Serial.println(error.c_str()); return false; }
-    if (doc.containsKey("image") && doc.containsKey("checksum")) {
-      imageData = doc["image"].as<String>();
-      checksum = doc["checksum"].as<String>();
-      return true;
-    } else { Serial.println("JSON missing image or checksum fields"); return false; }
-  } else { Serial.print("HTTP error: "); Serial.println(httpCode); http.end(); return false; }
+    return false;
+  }
+  StaticJsonDocument<8> filter;
+  filter["checksum"] = true;
+  StaticJsonDocument<128> doc;
+  DeserializationError err = deserializeJson(doc, *http.getStreamPtr(), DeserializationOption::Filter(filter));
+  http.end();
+  if (err || !doc["checksum"]) {
+    Serial.printf("Checksum parse error: %s\n", err ? err.c_str() : "missing field");
+    return false;
+  }
+  checksum = doc["checksum"].as<String>();
+  return true;
+}
+
+bool fetchImageFromAPI(String& imageData) {
+  HTTPClient http;
+  WiFiClientSecure client;
+  client.setInsecure();
+  http.begin(client, API_URL);
+  http.addHeader("Authorization", getBasicAuthHeader());
+  http.addHeader("Accept", "application/json");
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("HTTP error: %d\n", code);
+    http.end();
+    return false;
+  }
+  StaticJsonDocument<8> filter;
+  filter["image"] = true;
+  DynamicJsonDocument doc(90000);
+  DeserializationError err = deserializeJson(doc, *http.getStreamPtr(), DeserializationOption::Filter(filter));
+  http.end();
+  if (err || !doc["image"]) {
+    Serial.printf("Image parse error: %s\n", err ? err.c_str() : "missing field");
+    return false;
+  }
+  imageData = doc["image"].as<String>();
+  return true;
 }
 
 void saveChecksumToEEPROM(const String& checksum) {
@@ -260,95 +281,26 @@ bool decodeAndDisplayImage(const String& base64Image) {
 
 void fetchAndDisplayImage() {
   if (WiFi.status() != WL_CONNECTED) { Serial.println("WiFi not connected, skipping fetch"); return; }
-  String imageData = "", checksum = "";
-  if (fetchImageFromAPI(imageData, checksum)) {
-    if (checksum != storedChecksum) {
-      if (decodeAndDisplayImage(imageData)) {
-        storedChecksum = checksum; saveChecksumToEEPROM(checksum); hasValidImage = true;
-      }
-    } else {
-      Serial.println("Image unchanged, skipping render");
-    }
-  }
-}
 
-void fetchDirectImageAndDisplay(const char* url) {
-  if (WiFi.status() != WL_CONNECTED) { Serial.println("WiFi not connected"); return; }
-  Serial.println("Fetching direct PNG...");
-  Serial.println(url);
+  String checksum = "";
+  Serial.println("Fetching checksum from API...");
+  Serial.println(API_URL);
+  if (!fetchChecksumFromAPI(checksum)) return;
 
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.begin(client, url);
-  int httpCode = http.GET();
-  if (httpCode != HTTP_CODE_OK) {
-    Serial.printf("HTTP error: %d\n", httpCode);
-    http.end();
+  if (checksum == storedChecksum) {
+    Serial.println("Image unchanged, skipping render");
     return;
   }
 
-  int contentLength = http.getSize();
-  Serial.printf("Content-Length: %d bytes\n", contentLength);
-
-  // Allocate buffer – use known size or a generous max for chunked responses
-  const int MAX_PNG_BYTES = 80000;
-  int bufSize = (contentLength > 0 && contentLength <= MAX_PNG_BYTES) ? contentLength : MAX_PNG_BYTES;
-  uint8_t* buffer = (uint8_t*)malloc(bufSize);
-  if (!buffer) { Serial.println("Failed to allocate memory"); http.end(); return; }
-
-  WiFiClient* stream = http.getStreamPtr();
-  int totalRead = 0;
-  unsigned long activityTimeout = millis() + 10000;
-  while ((http.connected() || stream->available()) && totalRead < bufSize && millis() < activityTimeout) {
-    int avail = stream->available();
-    if (avail > 0) {
-      totalRead += stream->readBytes(buffer + totalRead, min(avail, bufSize - totalRead));
-      activityTimeout = millis() + 3000; // reset on activity
+  Serial.println("New image detected, fetching...");
+  String imageData = "";
+  if (fetchImageFromAPI(imageData)) {
+    if (decodeAndDisplayImage(imageData)) {
+      storedChecksum = checksum;
+      saveChecksumToEEPROM(checksum);
+      hasValidImage = true;
     }
-    delay(1);
   }
-  http.end();
-
-  if (totalRead == 0) {
-    Serial.println("No data received");
-    free(buffer);
-    return;
-  }
-  Serial.printf("Downloaded %d bytes, decoding PNG...\n", totalRead);
-
-  int16_t rc = png.openRAM(buffer, totalRead, PNGDraw);
-  if (rc == PNG_SUCCESS) {
-    epd.fillScreen(TFT_WHITE);
-    rc = png.decode(NULL, 0);
-    png.close();
-    free(buffer);
-    if (rc == PNG_SUCCESS) {
-      epd.update();
-      Serial.println("Image rendered!");
-    } else {
-      Serial.printf("PNG decode error: %d\n", rc);
-    }
-  } else {
-    Serial.printf("PNG open error: %d\n", rc);
-    free(buffer);
-  }
-}
-
-
-void drawTestPattern() {
-  Serial.println("Drawing test pattern...");
-  epd.fillScreen(TFT_WHITE);
-  epd.fillRect(0,   0,   800, 10,  TFT_BLACK); // top bar
-  epd.fillRect(0,   470, 800, 10,  TFT_BLACK); // bottom bar
-  epd.fillRect(0,   0,   10,  480, TFT_BLACK); // left bar
-  epd.fillRect(790, 0,   10,  480, TFT_BLACK); // right bar
-  epd.fillRect(350, 215, 100, 50,  TFT_BLACK); // center box
-  epd.setTextColor(TFT_BLACK);
-  epd.setTextSize(3);
-  epd.drawString("TEST OK", 280, 100);
-  epd.update();
-  Serial.println("Test pattern sent to display");
 }
 
 void drawInitialScreen() {
@@ -368,59 +320,57 @@ void drawErrorScreen(const String& errorMsg) {
   epd.update();
 }
 
+void goToSleep() {
+  Serial.printf("Deep sleep i %d minut(er)...\n", REFRESH_INTERVAL_MINUTES);
+  Serial.flush();
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  esp_sleep_enable_timer_wakeup(SLEEP_DURATION_US);
+  esp_deep_sleep_start();
+}
+
 void setup() {
   Serial.begin(115200);
-  while (!Serial) { }
-  
-  Serial.println("TRMNL WiFi Diagnostik");
+  // Vänta max 3 s på Serial – blockerar inte fristående enhet
+  unsigned long t0 = millis();
+  while (!Serial && millis() - t0 < 3000) {}
+
+  bool isTimerWake = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER;
+
+  Serial.println(isTimerWake ? "Vaknat från deep sleep" : "TRMNL Uppstart");
   Serial.println("=====================");
-  
+
   EEPROM.begin(128);
-  storedChecksum = loadChecksumFromEEPROM();
-  
+  storedChecksum = loadChecksumFromEEPROM(); // Ladda sparad checksum
+
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
-  
-  // pinMode(BUTTON_D1, INPUT_PULLUP);
-  // pinMode(BUTTON_D2, INPUT_PULLUP);
-  // pinMode(BUTTON_D4, INPUT_PULLUP);
-  
+
   epd.init();
   epd.setRotation(0);
   epd.setTextColor(TFT_BLACK);
-  
-  drawInitialScreen();
-  
+
+  if (!isTimerWake) {
+    // Endast vid cold boot: visa "Connecting..."-skärm och WiFi-status
+    drawInitialScreen();
+  }
+
   connectWiFi();
-  
-  drawWiFiStatusScreen();
-  delay(5000);
+
+  if (!isTimerWake) {
+    drawWiFiStatusScreen();
+    delay(3000);
+  }
+
   if (WiFi.status() == WL_CONNECTED) {
     fetchAndDisplayImage();
-    lastFetchTime = millis();
-    imagePending = false;
+  } else {
+    Serial.println("WiFi misslyckades, sover ändå.");
   }
-  
-  lastStatusUpdate = millis();
+
+  goToSleep();
 }
 
 void loop() {
-  reconnectWiFi();
-  
-  unsigned long now = millis();
-  if (now - lastStatusUpdate >= STATUS_CHECK_INTERVAL) {
-    drawWiFiStatusScreen();
-    lastStatusUpdate = now;
-  }
-
-  // Fetch image immediately once WiFi connects, then every FETCH_INTERVAL
-  if (WiFi.status() == WL_CONNECTED) {
-    if (imagePending || now - lastFetchTime >= FETCH_INTERVAL) {
-      fetchAndDisplayImage();
-      lastFetchTime = now;
-      imagePending = false;
-    }
-  }
-  
-  delay(100);
+  // Når aldrig hit – deep sleep i setup() startar om enheten vid uppvakning
 }
