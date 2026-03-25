@@ -396,7 +396,7 @@ void setup() {
   drawWiFiStatusScreen();
   delay(5000);
   if (WiFi.status() == WL_CONNECTED) {
-    fetchDirectImageAndDisplay(DIRECT_IMAGE_URL);
+    fetchAndDisplayImage();
     lastFetchTime = millis();
     imagePending = false;
   }
@@ -416,7 +416,7 @@ void loop() {
   // Fetch image immediately once WiFi connects, then every FETCH_INTERVAL
   if (WiFi.status() == WL_CONNECTED) {
     if (imagePending || now - lastFetchTime >= FETCH_INTERVAL) {
-      fetchDirectImageAndDisplay(DIRECT_IMAGE_URL); // byt till fetchAndDisplayImage() när webhooken är klar
+      fetchAndDisplayImage();
       lastFetchTime = now;
       imagePending = false;
     }
