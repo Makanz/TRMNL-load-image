@@ -196,68 +196,6 @@ String getBasicAuthHeader() {
   return String("Basic ") + String((char*)encoded);
 }
 
-bool fetchChecksumFromAPI(String& checksum) {
-  Serial.printf("[Heap] Före checksum-fetch: %u bytes fritt\n", ESP.getFreeHeap());
-  HTTPClient http;
-  WiFiClientSecure client;
-  client.setInsecure();
-  http.begin(client, API_URL);
-  http.setTimeout(15000);
-  http.addHeader("Authorization", getBasicAuthHeader());
-  http.addHeader("Accept", "application/json");
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("HTTP error: %d\n", code);
-    http.end();
-    return false;
-  }
-  String payload = http.getString();
-  http.end();
-  Serial.printf("[Heap] Efter checksum HTTP-läsning: %u bytes fritt, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
-  StaticJsonDocument<64> filter;
-  filter["checksum"] = true;
-  StaticJsonDocument<128> doc;
-  DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-  Serial.printf("[Heap] Efter checksum JSON-parse: %u bytes fritt\n", ESP.getFreeHeap());
-  if (err || !doc["checksum"]) {
-    Serial.printf("Checksum parse error: %s\n", err ? err.c_str() : "missing field");
-    return false;
-  }
-  checksum = doc["checksum"].as<String>();
-  return true;
-}
-
-bool fetchImageFromAPI(String& imageData) {
-  Serial.printf("[Heap] Före bild-fetch: %u bytes fritt\n", ESP.getFreeHeap());
-  HTTPClient http;
-  WiFiClientSecure client;
-  client.setInsecure();
-  http.begin(client, API_URL);
-  http.setTimeout(15000);
-  http.addHeader("Authorization", getBasicAuthHeader());
-  http.addHeader("Accept", "application/json");
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("HTTP error: %d\n", code);
-    http.end();
-    return false;
-  }
-  String payload = http.getString();
-  http.end();
-  Serial.printf("[Heap] Efter bild HTTP-läsning: %u bytes fritt, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
-  StaticJsonDocument<64> filter;
-  filter["image"] = true;
-  DynamicJsonDocument doc(32000);
-  DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-  Serial.printf("[Heap] Efter bild JSON-parse: %u bytes fritt\n", ESP.getFreeHeap());
-  if (err || !doc["image"]) {
-    Serial.printf("Image parse error: %s\n", err ? err.c_str() : "missing field");
-    return false;
-  }
-  imageData = doc["image"].as<String>();
-  return true;
-}
-
 void saveChecksumToEEPROM(const String& checksum) {
   for (int i = 0; i < 64 && i < (int)checksum.length(); i++) EEPROM.write(i, checksum[i]);
   EEPROM.write(64, '\0');
@@ -270,12 +208,12 @@ String loadChecksumFromEEPROM() {
   return checksum;
 }
 
-bool decodeAndDisplayImage(const String& base64Image) {
-  unsigned int decodedLen = decode_base64_length((unsigned char*)base64Image.c_str(), base64Image.length());
+bool decodeAndDisplayImage(const char* base64Image, size_t base64Len) {
+  unsigned int decodedLen = decode_base64_length((unsigned char*)base64Image, base64Len);
+  Serial.printf("[Heap] Före PNG-allokering: %u bytes fritt, allokerar %u bytes\n", ESP.getFreeHeap(), decodedLen);
   uint8_t* decodedBuffer = (uint8_t*)malloc(decodedLen);
-  Serial.printf("[Heap] Före PNG-decode: %u bytes fritt, allokerar %u bytes\n", ESP.getFreeHeap(), decodedLen);
   if (!decodedBuffer) { Serial.println("Failed to allocate memory"); return false; }
-  decode_base64((unsigned char*)base64Image.c_str(), base64Image.length(), decodedBuffer);
+  decode_base64((unsigned char*)base64Image, base64Len, decodedBuffer);
   int16_t rc = png.openRAM(decodedBuffer, decodedLen, PNGDraw);
   if (rc == PNG_SUCCESS) {
     epd.fillScreen(TFT_WHITE);
@@ -293,24 +231,58 @@ bool decodeAndDisplayImage(const String& base64Image) {
 void fetchAndDisplayImage() {
   if (WiFi.status() != WL_CONNECTED) { Serial.println("WiFi not connected, skipping fetch"); return; }
 
-  String checksum = "";
-  Serial.println("Fetching checksum from API...");
-  Serial.println(API_URL);
-  if (!fetchChecksumFromAPI(checksum)) return;
+  HTTPClient http;
+  WiFiClientSecure client;
+  client.setInsecure();
+  http.begin(client, API_URL);
+  http.setTimeout(15000);
+  http.addHeader("Authorization", getBasicAuthHeader());
+  http.addHeader("Accept", "application/json");
 
+  Serial.println("Fetching image from API...");
+  Serial.println(API_URL);
+  Serial.printf("[Heap] Före fetch: %u bytes fritt\n", ESP.getFreeHeap());
+
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("HTTP error: %d\n", code);
+    http.end();
+    return;
+  }
+
+  String payload = http.getString();
+  http.end();
+  Serial.printf("[Heap] Efter HTTP-läsning: %u bytes fritt, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
+
+  StaticJsonDocument<64> filter;
+  filter["checksum"] = true;
+  filter["image"] = true;
+  DynamicJsonDocument doc(38000);
+  DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+  payload = String(); // Frigör ~34KB direkt
+  Serial.printf("[Heap] Efter JSON-parse (payload frigjord): %u bytes fritt\n", ESP.getFreeHeap());
+
+  if (err) {
+    Serial.printf("JSON parse error: %s\n", err.c_str());
+    return;
+  }
+  if (!doc["checksum"]) { Serial.println("Missing checksum field"); return; }
+
+  String checksum = doc["checksum"].as<String>();
   if (checksum == storedChecksum) {
     Serial.println("Image unchanged, skipping render");
     return;
   }
+  if (!doc["image"]) { Serial.println("Missing image field"); return; }
 
-  Serial.println("New image detected, fetching...");
-  String imageData = "";
-  if (fetchImageFromAPI(imageData)) {
-    if (decodeAndDisplayImage(imageData)) {
-      storedChecksum = checksum;
-      saveChecksumToEEPROM(checksum);
-      hasValidImage = true;
-    }
+  Serial.println("New image detected, rendering...");
+  const char* imageStr = doc["image"];
+  size_t imageLen = strlen(imageStr);
+
+  if (decodeAndDisplayImage(imageStr, imageLen)) {
+    storedChecksum = checksum;
+    saveChecksumToEEPROM(checksum);
+    hasValidImage = true;
   }
 }
 
