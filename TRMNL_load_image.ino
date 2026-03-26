@@ -197,10 +197,12 @@ String getBasicAuthHeader() {
 }
 
 bool fetchChecksumFromAPI(String& checksum) {
+  Serial.printf("[Heap] Före checksum-fetch: %u bytes fritt\n", ESP.getFreeHeap());
   HTTPClient http;
   WiFiClientSecure client;
   client.setInsecure();
   http.begin(client, API_URL);
+  http.setTimeout(15000);
   http.addHeader("Authorization", getBasicAuthHeader());
   http.addHeader("Accept", "application/json");
   int code = http.GET();
@@ -209,11 +211,14 @@ bool fetchChecksumFromAPI(String& checksum) {
     http.end();
     return false;
   }
-  StaticJsonDocument<8> filter;
+  String payload = http.getString();
+  http.end();
+  Serial.printf("[Heap] Efter checksum HTTP-läsning: %u bytes fritt, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
+  StaticJsonDocument<64> filter;
   filter["checksum"] = true;
   StaticJsonDocument<128> doc;
-  DeserializationError err = deserializeJson(doc, *http.getStreamPtr(), DeserializationOption::Filter(filter));
-  http.end();
+  DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+  Serial.printf("[Heap] Efter checksum JSON-parse: %u bytes fritt\n", ESP.getFreeHeap());
   if (err || !doc["checksum"]) {
     Serial.printf("Checksum parse error: %s\n", err ? err.c_str() : "missing field");
     return false;
@@ -223,10 +228,12 @@ bool fetchChecksumFromAPI(String& checksum) {
 }
 
 bool fetchImageFromAPI(String& imageData) {
+  Serial.printf("[Heap] Före bild-fetch: %u bytes fritt\n", ESP.getFreeHeap());
   HTTPClient http;
   WiFiClientSecure client;
   client.setInsecure();
   http.begin(client, API_URL);
+  http.setTimeout(15000);
   http.addHeader("Authorization", getBasicAuthHeader());
   http.addHeader("Accept", "application/json");
   int code = http.GET();
@@ -235,11 +242,14 @@ bool fetchImageFromAPI(String& imageData) {
     http.end();
     return false;
   }
-  StaticJsonDocument<8> filter;
-  filter["image"] = true;
-  DynamicJsonDocument doc(90000);
-  DeserializationError err = deserializeJson(doc, *http.getStreamPtr(), DeserializationOption::Filter(filter));
+  String payload = http.getString();
   http.end();
+  Serial.printf("[Heap] Efter bild HTTP-läsning: %u bytes fritt, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
+  StaticJsonDocument<64> filter;
+  filter["image"] = true;
+  DynamicJsonDocument doc(32000);
+  DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+  Serial.printf("[Heap] Efter bild JSON-parse: %u bytes fritt\n", ESP.getFreeHeap());
   if (err || !doc["image"]) {
     Serial.printf("Image parse error: %s\n", err ? err.c_str() : "missing field");
     return false;
@@ -263,6 +273,7 @@ String loadChecksumFromEEPROM() {
 bool decodeAndDisplayImage(const String& base64Image) {
   unsigned int decodedLen = decode_base64_length((unsigned char*)base64Image.c_str(), base64Image.length());
   uint8_t* decodedBuffer = (uint8_t*)malloc(decodedLen);
+  Serial.printf("[Heap] Före PNG-decode: %u bytes fritt, allokerar %u bytes\n", ESP.getFreeHeap(), decodedLen);
   if (!decodedBuffer) { Serial.println("Failed to allocate memory"); return false; }
   decode_base64((unsigned char*)base64Image.c_str(), base64Image.length(), decodedBuffer);
   int16_t rc = png.openRAM(decodedBuffer, decodedLen, PNGDraw);
@@ -321,12 +332,8 @@ void drawErrorScreen(const String& errorMsg) {
 }
 
 void goToSleep() {
-  Serial.printf("Deep sleep i %d minut(er)...\n", REFRESH_INTERVAL_MINUTES);
-  Serial.flush();
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-  esp_sleep_enable_timer_wakeup(SLEEP_DURATION_US);
-  esp_deep_sleep_start();
+  // DEBUG: deep sleep avstängd
+  Serial.println("[DEBUG] Deep sleep inaktiverat – loopar istället");
 }
 
 void setup() {
@@ -361,6 +368,8 @@ void setup() {
     drawWiFiStatusScreen();
     delay(3000);
   }
+
+  Serial.printf("[Heap] Efter WiFi: %u bytes fritt\n", ESP.getFreeHeap());
 
   if (WiFi.status() == WL_CONNECTED) {
     fetchAndDisplayImage();
