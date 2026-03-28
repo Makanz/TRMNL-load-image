@@ -259,41 +259,47 @@ bool fetchRawImageAndDisplay() {
     return false;
   }
 
-  int contentLength = http.getSize();
-  if (contentLength <= 0) {
-    Serial.println("Unknown content length, cannot allocate buffer");
-    http.end();
-    return false;
-  }
-
-  Serial.printf("[Heap] PNG-storlek: %d bytes, fritt: %u bytes\n", contentLength, ESP.getFreeHeap());
-  uint8_t* imgBuffer = (uint8_t*)malloc(contentLength);
-  if (!imgBuffer) {
-    Serial.println("Failed to allocate image buffer");
-    http.end();
-    return false;
-  }
-
+  // n8n uses Transfer-Encoding: chunked so Content-Length is -1.
+  // Read stream in 1 KB chunks, growing the buffer with realloc.
+  const int CHUNK = 1024;
+  int contentLength = http.getSize(); // may be -1 for chunked
   WiFiClient* stream = http.getStreamPtr();
+
+  uint8_t* imgBuffer = nullptr;
   int bytesRead = 0;
-  while (http.connected() && bytesRead < contentLength) {
+  unsigned long lastData = millis();
+
+  while ((http.connected() || stream->available()) && (millis() - lastData < 10000)) {
     int avail = stream->available();
     if (avail > 0) {
-      int toRead = min(avail, contentLength - bytesRead);
+      int toRead = min(avail, CHUNK);
+      uint8_t* newBuf = (uint8_t*)realloc(imgBuffer, bytesRead + toRead);
+      if (!newBuf) {
+        Serial.println("realloc failed");
+        free(imgBuffer);
+        http.end();
+        return false;
+      }
+      imgBuffer = newBuf;
       bytesRead += stream->readBytes(imgBuffer + bytesRead, toRead);
+      lastData = millis();
     } else {
+      // For known content-length, stop when we have all bytes
+      if (contentLength > 0 && bytesRead >= contentLength) break;
       delay(1);
     }
   }
   http.end();
 
-  if (bytesRead != contentLength) {
-    Serial.printf("Incomplete read: %d / %d bytes\n", bytesRead, contentLength);
+  Serial.printf("[Heap] PNG laddad: %d bytes, fritt: %u bytes\n", bytesRead, ESP.getFreeHeap());
+
+  if (bytesRead == 0) {
+    Serial.println("No image data received");
     free(imgBuffer);
     return false;
   }
 
-  int16_t rc = png.openRAM(imgBuffer, contentLength, PNGDraw);
+  int16_t rc = png.openRAM(imgBuffer, bytesRead, PNGDraw);
   if (rc != PNG_SUCCESS) {
     Serial.printf("PNG open error: %d\n", rc);
     free(imgBuffer);
