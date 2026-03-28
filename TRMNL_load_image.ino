@@ -208,78 +208,130 @@ String loadChecksumFromEEPROM() {
   return checksum;
 }
 
-bool decodeAndDisplayImage(const char* base64Image, size_t base64Len) {
-  unsigned int decodedLen = decode_base64_length((unsigned char*)base64Image, base64Len);
-  Serial.printf("[Heap] Före PNG-allokering: %u bytes fritt, allokerar %u bytes\n", ESP.getFreeHeap(), decodedLen);
-  uint8_t* decodedBuffer = (uint8_t*)malloc(decodedLen);
-  if (!decodedBuffer) { Serial.println("Failed to allocate memory"); return false; }
-  decode_base64((unsigned char*)base64Image, base64Len, decodedBuffer);
-  int16_t rc = png.openRAM(decodedBuffer, decodedLen, PNGDraw);
-  if (rc == PNG_SUCCESS) {
-    epd.fillScreen(TFT_WHITE);
-    rc = png.decode(NULL, 0);
-    png.close();
-    free(decodedBuffer);
-    if (rc == PNG_SUCCESS) {
-      epd.update();
-      return true;
-    }
+String fetchChecksum() {
+  HTTPClient http;
+  WiFiClientSecure client;
+  client.setInsecure();
+  http.begin(client, API_URL_META);
+  http.setTimeout(10000);
+  http.addHeader("Authorization", getBasicAuthHeader());
+  http.addHeader("Accept", "application/json");
+
+  Serial.println("Fetching checksum...");
+  Serial.printf("[Heap] Fore checksum-fetch: %u bytes fritt\n", ESP.getFreeHeap());
+
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("Checksum HTTP error: %d\n", code);
+    http.end();
+    return "";
+  }
+
+  String payload = http.getString();
+  http.end();
+  Serial.printf("[Heap] Efter checksum-fetch: %u bytes fritt, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
+
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err) {
+    Serial.printf("Checksum JSON error: %s\n", err.c_str());
+    return "";
+  }
+
+  return doc["checksum"] | "";
+}
+
+bool fetchRawImageAndDisplay() {
+  HTTPClient http;
+  WiFiClientSecure client;
+  client.setInsecure();
+  http.begin(client, API_URL_IMAGE);
+  http.setTimeout(15000);
+  http.addHeader("Authorization", getBasicAuthHeader());
+
+  Serial.println("Fetching raw image...");
+  Serial.printf("[Heap] Fore bild-fetch: %u bytes fritt\n", ESP.getFreeHeap());
+
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("Image HTTP error: %d\n", code);
+    http.end();
     return false;
-  } else { free(decodedBuffer); return false; }
+  }
+
+  int contentLength = http.getSize();
+  if (contentLength <= 0) {
+    Serial.println("Unknown content length, cannot allocate buffer");
+    http.end();
+    return false;
+  }
+
+  Serial.printf("[Heap] PNG-storlek: %d bytes, fritt: %u bytes\n", contentLength, ESP.getFreeHeap());
+  uint8_t* imgBuffer = (uint8_t*)malloc(contentLength);
+  if (!imgBuffer) {
+    Serial.println("Failed to allocate image buffer");
+    http.end();
+    return false;
+  }
+
+  WiFiClient* stream = http.getStreamPtr();
+  int bytesRead = 0;
+  while (http.connected() && bytesRead < contentLength) {
+    int avail = stream->available();
+    if (avail > 0) {
+      int toRead = min(avail, contentLength - bytesRead);
+      bytesRead += stream->readBytes(imgBuffer + bytesRead, toRead);
+    } else {
+      delay(1);
+    }
+  }
+  http.end();
+
+  if (bytesRead != contentLength) {
+    Serial.printf("Incomplete read: %d / %d bytes\n", bytesRead, contentLength);
+    free(imgBuffer);
+    return false;
+  }
+
+  int16_t rc = png.openRAM(imgBuffer, contentLength, PNGDraw);
+  if (rc != PNG_SUCCESS) {
+    Serial.printf("PNG open error: %d\n", rc);
+    free(imgBuffer);
+    return false;
+  }
+
+  epd.fillScreen(TFT_WHITE);
+  rc = png.decode(NULL, 0);
+  png.close();
+  free(imgBuffer);
+
+  if (rc != PNG_SUCCESS) {
+    Serial.printf("PNG decode error: %d\n", rc);
+    return false;
+  }
+
+  epd.update();
+  return true;
 }
 
 void fetchAndDisplayImage() {
   if (WiFi.status() != WL_CONNECTED) { Serial.println("WiFi not connected, skipping fetch"); return; }
 
-  HTTPClient http;
-  WiFiClientSecure client;
-  client.setInsecure();
-  http.begin(client, API_URL);
-  http.setTimeout(15000);
-  http.addHeader("Authorization", getBasicAuthHeader());
-  http.addHeader("Accept", "application/json");
-
-  Serial.println("Fetching image from API...");
-  Serial.println(API_URL);
-  Serial.printf("[Heap] Före fetch: %u bytes fritt\n", ESP.getFreeHeap());
-
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("HTTP error: %d\n", code);
-    http.end();
+  String checksum = fetchChecksum();
+  if (checksum.isEmpty()) {
+    Serial.println("Failed to fetch checksum");
     return;
   }
 
-  String payload = http.getString();
-  http.end();
-  Serial.printf("[Heap] Efter HTTP-läsning: %u bytes fritt, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
-
-  StaticJsonDocument<64> filter;
-  filter["checksum"] = true;
-  filter["image"] = true;
-  DynamicJsonDocument doc(38000);
-  DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-  payload = String(); // Frigör ~34KB direkt
-  Serial.printf("[Heap] Efter JSON-parse (payload frigjord): %u bytes fritt\n", ESP.getFreeHeap());
-
-  if (err) {
-    Serial.printf("JSON parse error: %s\n", err.c_str());
-    return;
-  }
-  if (!doc["checksum"]) { Serial.println("Missing checksum field"); return; }
-
-  String checksum = doc["checksum"].as<String>();
   if (checksum == storedChecksum) {
     Serial.println("Image unchanged, skipping render");
     return;
   }
-  if (!doc["image"]) { Serial.println("Missing image field"); return; }
 
-  Serial.println("New image detected, rendering...");
-  const char* imageStr = doc["image"];
-  size_t imageLen = strlen(imageStr);
+  Serial.println("New image detected, fetching raw image...");
+  bool success = fetchRawImageAndDisplay();
 
-  if (decodeAndDisplayImage(imageStr, imageLen)) {
+  if (success) {
     storedChecksum = checksum;
     saveChecksumToEEPROM(checksum);
     hasValidImage = true;
