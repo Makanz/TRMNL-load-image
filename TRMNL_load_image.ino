@@ -241,6 +241,30 @@ String fetchChecksum() {
   return doc["checksum"] | "";
 }
 
+// Stream sink that accumulates binary data into a heap buffer.
+// Used with http.writeToStream() which correctly decodes chunked encoding,
+// unlike getStreamPtr() which returns the raw TCP stream.
+class BufStream : public Stream {
+public:
+  uint8_t* buf = nullptr;
+  int      len = 0;
+
+  size_t write(uint8_t c) override { return write(&c, 1); }
+
+  size_t write(const uint8_t* data, size_t sz) override {
+    uint8_t* nb = (uint8_t*)realloc(buf, len + sz);
+    if (!nb) return 0;
+    buf = nb;
+    memcpy(buf + len, data, sz);
+    len += sz;
+    return sz;
+  }
+
+  int available() override { return 0; }
+  int read()      override { return -1; }
+  int peek()      override { return -1; }
+};
+
 bool fetchRawImageAndDisplay() {
   HTTPClient http;
   WiFiClientSecure client;
@@ -259,37 +283,15 @@ bool fetchRawImageAndDisplay() {
     return false;
   }
 
-  // n8n uses Transfer-Encoding: chunked so Content-Length is -1.
-  // Read stream in 1 KB chunks, growing the buffer with realloc.
-  const int CHUNK = 1024;
-  int contentLength = http.getSize(); // may be -1 for chunked
-  WiFiClient* stream = http.getStreamPtr();
-
-  uint8_t* imgBuffer = nullptr;
-  int bytesRead = 0;
-  unsigned long lastData = millis();
-
-  while ((http.connected() || stream->available()) && (millis() - lastData < 10000)) {
-    int avail = stream->available();
-    if (avail > 0) {
-      int toRead = min(avail, CHUNK);
-      uint8_t* newBuf = (uint8_t*)realloc(imgBuffer, bytesRead + toRead);
-      if (!newBuf) {
-        Serial.println("realloc failed");
-        free(imgBuffer);
-        http.end();
-        return false;
-      }
-      imgBuffer = newBuf;
-      bytesRead += stream->readBytes(imgBuffer + bytesRead, toRead);
-      lastData = millis();
-    } else {
-      // For known content-length, stop when we have all bytes
-      if (contentLength > 0 && bytesRead >= contentLength) break;
-      delay(1);
-    }
-  }
+  // writeToStream handles Transfer-Encoding: chunked correctly.
+  // getStreamPtr() would return the raw TCP stream including chunk-size headers,
+  // causing the PNG magic check to fail.
+  BufStream sink;
+  http.writeToStream(&sink);
   http.end();
+
+  uint8_t* imgBuffer = sink.buf;
+  int      bytesRead = sink.len;
 
   Serial.printf("[Heap] PNG laddad: %d bytes, fritt: %u bytes\n", bytesRead, ESP.getFreeHeap());
 
@@ -299,9 +301,40 @@ bool fetchRawImageAndDisplay() {
     return false;
   }
 
-  int16_t rc = png.openRAM(imgBuffer, bytesRead, PNGDraw);
+  // Detect format: PNG magic = 89 50 4E 47
+  bool isRawPNG = (bytesRead >= 4 &&
+                   imgBuffer[0] == 0x89 && imgBuffer[1] == 0x50 &&
+                   imgBuffer[2] == 0x4E && imgBuffer[3] == 0x47);
+
+  uint8_t* pngBuffer = imgBuffer;
+  int      pngBytes  = bytesRead;
+  uint8_t* decodedBuffer = nullptr;
+
+  if (!isRawPNG) {
+    Serial.println("Raw PNG magic not found, trying base64 decode...");
+    // Strip trailing whitespace/newlines from base64 string
+    while (pngBytes > 0 && (imgBuffer[pngBytes - 1] == '\n' ||
+                              imgBuffer[pngBytes - 1] == '\r' ||
+                              imgBuffer[pngBytes - 1] == ' '))
+      pngBytes--;
+
+    unsigned int decodedLen = decode_base64_length(imgBuffer, pngBytes);
+    decodedBuffer = (uint8_t*)malloc(decodedLen);
+    if (!decodedBuffer) {
+      Serial.println("malloc failed for base64 decode");
+      free(imgBuffer);
+      return false;
+    }
+    decode_base64(imgBuffer, pngBytes, decodedBuffer);
+    pngBuffer = decodedBuffer;
+    pngBytes  = (int)decodedLen;
+    Serial.printf("Base64 decoded: %d bytes\n", pngBytes);
+  }
+
+  int16_t rc = png.openRAM(pngBuffer, pngBytes, PNGDraw);
   if (rc != PNG_SUCCESS) {
     Serial.printf("PNG open error: %d\n", rc);
+    free(decodedBuffer);
     free(imgBuffer);
     return false;
   }
@@ -309,6 +342,7 @@ bool fetchRawImageAndDisplay() {
   epd.fillScreen(TFT_WHITE);
   rc = png.decode(NULL, 0);
   png.close();
+  free(decodedBuffer);
   free(imgBuffer);
 
   if (rc != PNG_SUCCESS) {
