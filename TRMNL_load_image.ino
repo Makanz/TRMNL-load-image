@@ -45,16 +45,19 @@ static int    prevChannel = 0;
 static String prevBSSID   = "";
 
 int PNGDraw(PNGDRAW* pDraw) {
-  uint16_t lineBuffer[MAX_IMAGE_WIDTH];
+  static uint16_t lineBuffer[MAX_IMAGE_WIDTH];
   png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_BIG_ENDIAN, 0xFFFFFFFF);
+  
   for (int x = 0; x < pDraw->iWidth; x++) {
     uint16_t p = lineBuffer[x];
     uint8_t r = (p >> 8) & 0xF8;
     uint8_t g = (p >> 3) & 0xFC;
     uint8_t b = (p << 3) & 0xF8;
     uint8_t lum = (r * 77 + g * 150 + b * 29) >> 8;
-    epd.drawPixel(x, pDraw->y, lum >= 128 ? TFT_WHITE : TFT_BLACK);
+    lineBuffer[x] = (lum >= 128) ? TFT_WHITE : TFT_BLACK;
   }
+  
+  epd.pushImage(0, pDraw->y, pDraw->iWidth, 1, lineBuffer);
   return 1;
 }
 
