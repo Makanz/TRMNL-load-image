@@ -17,9 +17,7 @@
 EPaper epd = EPaper();
 PNG png;
 
-// const int BUTTON_D1 = D1;
-// const int BUTTON_D2 = D2;
-// const int BUTTON_D4 = D4;
+const int BUTTON_1 = D1;
 
 String storedChecksum = "";
 bool hasValidImage = false;
@@ -215,6 +213,11 @@ String getBasicAuthHeader() {
   return String("Basic ") + String((char*)encoded);
 }
 
+void clearChecksumInEEPROM() {
+  EEPROM.write(0, '\0');
+  EEPROM.commit();
+}
+
 void saveChecksumToEEPROM(const String& checksum) {
   for (int i = 0; i < 64 && i < (int)checksum.length(); i++) EEPROM.write(i, checksum[i]);
   EEPROM.write(64, '\0');
@@ -382,7 +385,7 @@ void fetchAndDisplayImage() {
     return;
   }
 
-  if (checksum == storedChecksum && 2 == 3) { // Skip for now
+  if (checksum == storedChecksum) {
     Serial.println("Image unchanged, skipping render");
     return;
   }
@@ -435,6 +438,13 @@ void setup() {
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
+
+  pinMode(BUTTON_1, INPUT_PULLUP);
+  if (digitalRead(BUTTON_1) == LOW) {
+    Serial.println("Button 1 pressed – clearing stored checksum");
+    storedChecksum = "";
+    clearChecksumInEEPROM();
+  }
 
   epd.init();
   epd.setRotation(0);
