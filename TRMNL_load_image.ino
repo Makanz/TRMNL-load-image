@@ -20,6 +20,58 @@ PNG png;
 
 const int BUTTON_1 = D1;
 
+#define FRAME_WIDTH  800
+#define FRAME_HEIGHT 480
+#define FRAME_SIZE   (FRAME_WIDTH * FRAME_HEIGHT / 8)
+
+static uint8_t* prevFrameBuffer = nullptr;
+static uint8_t* currFrameBuffer = nullptr;
+static bool frameBufferInited = false;
+
+static int changedMinY = FRAME_HEIGHT;
+static int changedMaxY = -1;
+static bool hasChanges = false;
+
+inline void setPixelBit(uint8_t* buf, int x, int y, bool black) {
+  int byteIdx = (y * FRAME_WIDTH + x) / 8;
+  int bitIdx = 7 - ((y * FRAME_WIDTH + x) % 8);
+  if (black) buf[byteIdx] &= ~(1 << bitIdx);
+  else      buf[byteIdx] |=  (1 << bitIdx);
+}
+
+inline bool getPixelBit(uint8_t* buf, int x, int y) {
+  int byteIdx = (y * FRAME_WIDTH + x) / 8;
+  int bitIdx = 7 - ((y * FRAME_WIDTH + x) % 8);
+  return (buf[byteIdx] >> bitIdx) & 1;
+}
+
+void commitCurrentFrame() {
+  if (!prevFrameBuffer || !currFrameBuffer) return;
+  memcpy(prevFrameBuffer, currFrameBuffer, FRAME_SIZE);
+}
+
+void initFrameBuffers() {
+  if (frameBufferInited) return;
+  prevFrameBuffer = (uint8_t*)malloc(FRAME_SIZE);
+  currFrameBuffer = (uint8_t*)malloc(FRAME_SIZE);
+  if (prevFrameBuffer && currFrameBuffer) {
+    memset(prevFrameBuffer, 0xFF, FRAME_SIZE);
+    memset(currFrameBuffer, 0xFF, FRAME_SIZE);
+    frameBufferInited = true;
+    Serial.println("[FrameBuffer] Init: 47KB allocated");
+  } else {
+    Serial.println("[FrameBuffer] FAILED to allocate!");
+    if (prevFrameBuffer) free(prevFrameBuffer);
+    if (currFrameBuffer) free(currFrameBuffer);
+  }
+}
+
+void freeFrameBuffers() {
+  if (prevFrameBuffer) { free(prevFrameBuffer); prevFrameBuffer = nullptr; }
+  if (currFrameBuffer) { free(currFrameBuffer); currFrameBuffer = nullptr; }
+  frameBufferInited = false;
+}
+
 String storedChecksum = "";
 bool hasValidImage = false;
 
@@ -49,14 +101,33 @@ int PNGDraw(PNGDRAW* pDraw) {
   uint16_t lineBuffer[MAX_IMAGE_WIDTH];
   png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_BIG_ENDIAN, 0xFFFFFFFF);
   
+  int y = pDraw->y;
+  bool rowHasChanges = false;
+  
   for (int x = 0; x < pDraw->iWidth; x++) {
     uint16_t p = lineBuffer[x];
     uint8_t r = (p >> 8) & 0xF8;
     uint8_t g = (p >> 3) & 0xFC;
     uint8_t b = (p << 3) & 0xF8;
     uint8_t lum = (r * 77 + g * 150 + b * 29) >> 8;
-    epd.drawPixel(x, pDraw->y, lum >= 128 ? TFT_WHITE : TFT_BLACK);
+    bool isBlack = lum < 128;
+    
+    bool prevPixel = prevFrameBuffer ? getPixelBit(prevFrameBuffer, x, y) : 1;
+    bool same = (isBlack ? 0 : 1) == prevPixel;
+    
+    if (!same) {
+      setPixelBit(currFrameBuffer, x, y, isBlack);
+      epd.drawPixel(x, y, isBlack ? TFT_BLACK : TFT_WHITE);
+      rowHasChanges = true;
+    }
   }
+  
+  if (rowHasChanges) {
+    hasChanges = true;
+    if (y < changedMinY) changedMinY = y;
+    if (y > changedMaxY) changedMaxY = y;
+  }
+  
   return 1;
 }
 
@@ -309,6 +380,15 @@ public:
 };
 
 bool fetchRawImageAndDisplay() {
+  initFrameBuffers();
+  if (!frameBufferInited) {
+    Serial.println("[Render] Frame buffers not available, using full render");
+  }
+  
+  hasChanges = false;
+  changedMinY = FRAME_HEIGHT;
+  changedMaxY = -1;
+  
   HTTPClient http;
   WiFiClientSecure client;
   client.setInsecure();
@@ -326,9 +406,6 @@ bool fetchRawImageAndDisplay() {
     return false;
   }
 
-  // writeToStream handles Transfer-Encoding: chunked correctly.
-  // getStreamPtr() would return the raw TCP stream including chunk-size headers,
-  // causing the PNG magic check to fail.
   BufStream sink;
   http.writeToStream(&sink);
   http.end();
@@ -344,7 +421,6 @@ bool fetchRawImageAndDisplay() {
     return false;
   }
 
-  // Detect format: PNG magic = 89 50 4E 47
   bool isRawPNG = (bytesRead >= 4 &&
                    imgBuffer[0] == 0x89 && imgBuffer[1] == 0x50 &&
                    imgBuffer[2] == 0x4E && imgBuffer[3] == 0x47);
@@ -355,7 +431,6 @@ bool fetchRawImageAndDisplay() {
 
   if (!isRawPNG) {
     Serial.println("Raw PNG magic not found, trying base64 decode...");
-    // Strip trailing whitespace/newlines from base64 string
     while (pngBytes > 0 && (imgBuffer[pngBytes - 1] == '\n' ||
                               imgBuffer[pngBytes - 1] == '\r' ||
                               imgBuffer[pngBytes - 1] == ' '))
@@ -374,6 +449,10 @@ bool fetchRawImageAndDisplay() {
     Serial.printf("Base64 decoded: %d bytes\n", pngBytes);
   }
 
+  if (frameBufferInited) {
+    epd.fillScreen(TFT_WHITE);
+  }
+  
   int16_t rc = png.openRAM(pngBuffer, pngBytes, PNGDraw);
   if (rc != PNG_SUCCESS) {
     Serial.printf("PNG open error: %d\n", rc);
@@ -382,7 +461,6 @@ bool fetchRawImageAndDisplay() {
     return false;
   }
 
-  epd.fillScreen(TFT_WHITE);
   rc = png.decode(NULL, 0);
   png.close();
   free(decodedBuffer);
@@ -393,7 +471,27 @@ bool fetchRawImageAndDisplay() {
     return false;
   }
 
-  epd.update();
+  if (!frameBufferInited) {
+    epd.update();
+    return true;
+  }
+
+  if (!hasChanges) {
+    Serial.println("[Render] No pixels changed, skipping e-ink update");
+    return true;
+  }
+
+  int regionHeight = changedMaxY - changedMinY + 1;
+  Serial.printf("[Render] Changed rows: %d-%d (%d rows)\n", changedMinY, changedMaxY, regionHeight);
+
+  if (isFirstDraw) {
+    epd.update();
+    isFirstDraw = false;
+  } else {
+    epd.updataPartial(0, changedMinY, FRAME_WIDTH, regionHeight);
+  }
+
+  commitCurrentFrame();
   return true;
 }
 
@@ -472,6 +570,11 @@ void setup() {
   epd.init();
   epd.setRotation(0);
   epd.setTextColor(TFT_BLACK);
+  
+  initFrameBuffers();
+  if (isTimerWake && frameBufferInited) {
+    isFirstDraw = false;
+  }
 
   if (!isTimerWake) {
     // Endast vid cold boot: visa "Connecting..."-skärm och WiFi-status
