@@ -32,6 +32,12 @@ static int changedMinY = FRAME_HEIGHT;
 static int changedMaxY = -1;
 static bool hasChanges = false;
 
+static int renderOffsetX = 0;
+static int renderOffsetY = 0;
+static int renderClipW = 0;
+static int renderClipH = 0;
+static bool useRegionRender = false;
+
 inline void setPixelBit(uint8_t* buf, int x, int y, bool black) {
   int byteIdx = (y * FRAME_WIDTH + x) / 8;
   int bitIdx = 7 - ((y * FRAME_WIDTH + x) % 8);
@@ -58,11 +64,13 @@ void initFrameBuffers() {
     memset(prevFrameBuffer, 0xFF, FRAME_SIZE);
     memset(currFrameBuffer, 0xFF, FRAME_SIZE);
     frameBufferInited = true;
-    Serial.println("[FrameBuffer] Init: 47KB allocated");
+    Serial.println("[FrameBuffer] Init: 94KB allocated");
   } else {
     Serial.println("[FrameBuffer] FAILED to allocate!");
     if (prevFrameBuffer) free(prevFrameBuffer);
     if (currFrameBuffer) free(currFrameBuffer);
+    prevFrameBuffer = nullptr;
+    currFrameBuffer = nullptr;
   }
 }
 
@@ -101,31 +109,42 @@ int PNGDraw(PNGDRAW* pDraw) {
   uint16_t lineBuffer[MAX_IMAGE_WIDTH];
   png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_BIG_ENDIAN, 0xFFFFFFFF);
   
-  int y = pDraw->y;
+  int py = pDraw->y;
+  if (useRegionRender && py >= renderClipH) return 1;
+
+  int screenX = useRegionRender ? renderOffsetX : 0;
+  int screenY = useRegionRender ? renderOffsetY + py : py;
   bool rowHasChanges = false;
+  bool useDiff = !useRegionRender && frameBufferInited && prevFrameBuffer && currFrameBuffer;
   
-  for (int x = 0; x < pDraw->iWidth; x++) {
-    uint16_t p = lineBuffer[x];
+  for (int px = 0; px < pDraw->iWidth; px++) {
+    if (useRegionRender && px >= renderClipW) break;
+    
+    uint16_t p = lineBuffer[px];
     uint8_t r = (p >> 8) & 0xF8;
     uint8_t g = (p >> 3) & 0xFC;
     uint8_t b = (p << 3) & 0xF8;
     uint8_t lum = (r * 77 + g * 150 + b * 29) >> 8;
     bool isBlack = lum < 128;
     
-    bool prevPixel = prevFrameBuffer ? getPixelBit(prevFrameBuffer, x, y) : 1;
-    bool same = (isBlack ? 0 : 1) == prevPixel;
-    
-    if (!same) {
-      setPixelBit(currFrameBuffer, x, y, isBlack);
-      epd.drawPixel(x, y, isBlack ? TFT_BLACK : TFT_WHITE);
-      rowHasChanges = true;
+    if (useDiff) {
+      bool prevPixel = getPixelBit(prevFrameBuffer, screenX + px, screenY);
+      bool same = (isBlack ? 0 : 1) == prevPixel;
+      
+      if (!same) {
+        setPixelBit(currFrameBuffer, screenX + px, screenY, isBlack);
+        epd.drawPixel(screenX + px, screenY, isBlack ? TFT_BLACK : TFT_WHITE);
+        rowHasChanges = true;
+      }
+    } else {
+      epd.drawPixel(screenX + px, screenY, isBlack ? TFT_BLACK : TFT_WHITE);
     }
   }
   
-  if (rowHasChanges) {
+  if (useDiff && rowHasChanges) {
     hasChanges = true;
-    if (y < changedMinY) changedMinY = y;
-    if (y > changedMaxY) changedMaxY = y;
+    if (screenY < changedMinY) changedMinY = screenY;
+    if (screenY > changedMaxY) changedMaxY = screenY;
   }
   
   return 1;
@@ -498,25 +517,131 @@ bool fetchRawImageAndDisplay() {
 void fetchAndDisplayImage() {
   if (WiFi.status() != WL_CONNECTED) { Serial.println("WiFi not connected, skipping fetch"); return; }
 
-  String checksum = fetchChecksum();
-  if (checksum.isEmpty()) {
-    Serial.println("Failed to fetch checksum");
+  HTTPClient http;
+  WiFiClientSecure client;
+  client.setInsecure();
+  http.begin(client, API_URL_IMAGE_DIFF);
+  http.setTimeout(10000);
+  http.addHeader("Authorization", getBasicAuthHeader());
+  http.addHeader("Accept", "application/json");
+
+  Serial.println("Fetching image diff...");
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("ImageDiff HTTP error: %d\n", code);
+    http.end();
     return;
   }
 
-  if (checksum == storedChecksum) {
+  String payload = http.getString();
+  http.end();
+  Serial.printf("ImageDiff payload: %d bytes\n", payload.length());
+
+  StaticJsonDocument<4096> doc;
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err) {
+    Serial.printf("ImageDiff JSON error: %s\n", err.c_str());
+    return;
+  }
+
+  String currentChecksum = doc["currentChecksum"] | "";
+  if (currentChecksum.isEmpty()) {
+    Serial.println("No currentChecksum in response");
+    return;
+  }
+
+  if (currentChecksum == storedChecksum) {
     Serial.println("Image unchanged, skipping render");
     return;
   }
 
-  Serial.println("New image detected, fetching raw image...");
-  bool success = fetchRawImageAndDisplay();
+  Serial.printf("New image: %s -> %s\n", storedChecksum.c_str(), currentChecksum.c_str());
 
-  if (success) {
-    storedChecksum = checksum;
-    saveChecksumToEEPROM(checksum);
-    hasValidImage = true;
+  JsonArray changes = doc["changes"];
+  if (changes.isNull() || changes.size() == 0) {
+    Serial.println("No changes in diff");
+    storedChecksum = currentChecksum;
+    saveChecksumToEEPROM(currentChecksum);
+    return;
   }
+
+  Serial.printf("Processing %d changed regions...\n", changes.size());
+
+  for (JsonObject change : changes) {
+    int x = change["x"] | 0;
+    int y = change["y"] | 0;
+    int w = change["width"] | 1;
+    int h = change["height"] | 1;
+    Serial.printf("  Region: x=%d, y=%d, w=%d, h=%d\n", x, y, w, h);
+
+    String regionUrl = String(API_URL_REGION) + "&x=" + x + "&y=" + y + "&w=" + w + "&h=" + h;
+    HTTPClient httpRegion;
+    httpRegion.begin(client, regionUrl);
+    httpRegion.setTimeout(15000);
+    httpRegion.addHeader("Authorization", getBasicAuthHeader());
+
+    int regionCode = httpRegion.GET();
+    if (regionCode != HTTP_CODE_OK) {
+      Serial.printf("  Region fetch error: %d\n", regionCode);
+      httpRegion.end();
+      continue;
+    }
+
+    String regionData = httpRegion.getString();
+    httpRegion.end();
+
+    uint8_t* decoded = nullptr;
+    int decodedLen = 0;
+
+    if (regionData.length() >= 4 &&
+        (uint8_t)regionData[0] == 0x89 && (uint8_t)regionData[1] == 0x50) {
+      decoded = (uint8_t*)malloc(regionData.length());
+      if (decoded) {
+        memcpy(decoded, regionData.c_str(), regionData.length());
+        decodedLen = regionData.length();
+      }
+    } else {
+      unsigned char* inputBuf = (unsigned char*)regionData.c_str();
+      unsigned int decLen = decode_base64_length(inputBuf, regionData.length());
+      decoded = (uint8_t*)malloc(decLen);
+      if (decoded) {
+        decodedLen = decode_base64(inputBuf, regionData.length(), decoded);
+      }
+    }
+
+    if (!decoded || decodedLen == 0) {
+      Serial.println("  Failed to decode region data");
+      if (decoded) free(decoded);
+      continue;
+    }
+
+    epd.fillRect(x, y, w, h, TFT_WHITE);
+    epd.updataPartial(x, y, w, h);
+
+    useRegionRender = true;
+    renderOffsetX = x;
+    renderOffsetY = y;
+    renderClipW = w;
+    renderClipH = h;
+
+    int16_t rc = png.openRAM(decoded, decodedLen, PNGDraw);
+
+    if (rc == PNG_SUCCESS) {
+      png.decode(NULL, 0);
+      epd.updataPartial(x, y, w, h);
+      Serial.printf("  Rendered region %dx%d at (%d,%d)\n", w, h, x, y);
+    } else {
+      Serial.printf("  PNG decode error: %d\n", rc);
+    }
+
+    png.close();
+    useRegionRender = false;
+    free(decoded);
+  }
+
+  storedChecksum = currentChecksum;
+  saveChecksumToEEPROM(currentChecksum);
+  hasValidImage = true;
 }
 
 void drawInitialScreen() {
@@ -570,11 +695,6 @@ void setup() {
   epd.init();
   epd.setRotation(0);
   epd.setTextColor(TFT_BLACK);
-  
-  initFrameBuffers();
-  if (isTimerWake && frameBufferInited) {
-    isFirstDraw = false;
-  }
 
   if (!isTimerWake) {
     // Endast vid cold boot: visa "Connecting..."-skärm och WiFi-status
