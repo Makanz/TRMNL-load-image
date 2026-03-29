@@ -274,13 +274,28 @@ class BufStream : public Stream {
 public:
   uint8_t* buf = nullptr;
   int      len = 0;
+  int      capacity = 0;
+
+  ~BufStream() { free(buf); }
+
+  void clear() {
+    free(buf);
+    buf = nullptr;
+    len = 0;
+    capacity = 0;
+  }
 
   size_t write(uint8_t c) override { return write(&c, 1); }
 
   size_t write(const uint8_t* data, size_t sz) override {
-    uint8_t* nb = (uint8_t*)realloc(buf, len + sz);
-    if (!nb) return 0;
-    buf = nb;
+    if (len + sz > capacity) {
+      int newCap = capacity == 0 ? 256 : capacity * 2;
+      while (newCap < len + sz) newCap *= 2;
+      uint8_t* nb = (uint8_t*)realloc(buf, newCap);
+      if (!nb) return 0;
+      buf = nb;
+      capacity = newCap;
+    }
     memcpy(buf + len, data, sz);
     len += sz;
     return sz;
@@ -323,7 +338,7 @@ bool fetchRawImageAndDisplay() {
 
   if (bytesRead == 0) {
     Serial.println("No image data received");
-    free(imgBuffer);
+    sink.clear();
     return false;
   }
 
@@ -369,7 +384,7 @@ bool fetchRawImageAndDisplay() {
   rc = png.decode(NULL, 0);
   png.close();
   free(decodedBuffer);
-  free(imgBuffer);
+  sink.clear();
 
   if (rc != PNG_SUCCESS) {
     Serial.printf("PNG decode error: %d\n", rc);
