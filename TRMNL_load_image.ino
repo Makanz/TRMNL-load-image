@@ -8,6 +8,7 @@
 #include <base64.hpp>
 #include <ArduinoJson.h>
 #include <EEPROM.h>
+#include <esp_sleep.h>
 #define MAX_IMAGE_WIDTH 800
 #include <PNGdec.h>
 
@@ -438,8 +439,10 @@ void drawErrorScreen(const String& errorMsg) {
 }
 
 void goToSleep() {
-  // DEBUG: deep sleep avstängd
-  Serial.println("[DEBUG] Deep sleep inaktiverat – loopar istället");
+  Serial.printf("Går in i deep sleep i %d minuter...\n", REFRESH_INTERVAL_MINUTES);
+  Serial.flush();
+  esp_sleep_enable_timer_wakeup(SLEEP_DURATION_US);
+  esp_deep_sleep_start();
 }
 
 void setup() {
