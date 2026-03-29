@@ -51,7 +51,6 @@ int PNGDraw(PNGDRAW* pDraw) {
   png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_BIG_ENDIAN, 0xFFFFFFFF);
   for (int x = 0; x < pDraw->iWidth; x++) {
     uint16_t p = lineBuffer[x];
-    // Extract 8-bit channels from RGB565 and compute luminance
     uint8_t r = (p >> 8) & 0xF8;
     uint8_t g = (p >> 3) & 0xFC;
     uint8_t b = (p << 3) & 0xF8;
@@ -156,27 +155,47 @@ void drawWiFiStatusScreen() {
 
 void connectWiFi() {
   Serial.println("Connecting to WiFi...");
+
+  const int MAX_RETRIES       = 5;   // antal fullständiga försök
+  const int POLL_INTERVAL_MS  = 500; // hur ofta vi kollar status per försök
+  const int POLLS_PER_ATTEMPT = 20;  // 20 × 500 ms = 10 s per försök
+  const int RETRY_DELAY_MS    = 3000;// paus mellan försök (låter routern "svalna")
+
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+
+  for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    Serial.printf("Attempt %d/%d\n", attempt, MAX_RETRIES);
+
+    WiFi.disconnect(true);
     delay(500);
-    Serial.print(".");
-    attempts++;
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    for (int poll = 0; poll < POLLS_PER_ATTEMPT; poll++) {
+      if (WiFi.status() == WL_CONNECTED) break;
+      delay(POLL_INTERVAL_MS);
+      Serial.print(".");
+    }
+    Serial.println();
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("WiFi connected");
+      Serial.print("IP: ");
+      Serial.println(WiFi.localIP());
+      digitalWrite(LED_BUILTIN, HIGH);
+      return;
+    }
+
+    Serial.printf("Attempt %d failed (status %d)", attempt, WiFi.status());
+    if (attempt < MAX_RETRIES) {
+      Serial.printf(", retrying in %d s...\n", RETRY_DELAY_MS / 1000);
+      delay(RETRY_DELAY_MS);
+    } else {
+      Serial.println();
+    }
   }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("");
-    Serial.println("WiFi connected");
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
-    digitalWrite(LED_BUILTIN, HIGH);
-  } else {
-    Serial.println("");
-    Serial.println("WiFi connection failed!");
-    digitalWrite(LED_BUILTIN, LOW);
-  }
+
+  Serial.println("WiFi connection failed!");
+  digitalWrite(LED_BUILTIN, LOW);
 }
 
 void reconnectWiFi() {
@@ -363,7 +382,7 @@ void fetchAndDisplayImage() {
     return;
   }
 
-  if (checksum == storedChecksum) {
+  if (checksum == storedChecksum && 2 == 3) { // Skip for now
     Serial.println("Image unchanged, skipping render");
     return;
   }
