@@ -205,12 +205,16 @@ void reconnectWiFi() {
 }
 
 String getBasicAuthHeader() {
+  static String cached;
+  if (cached.length() > 0) return cached;
+
   String auth = String(BASIC_AUTH_USER) + ":" + String(BASIC_AUTH_PASS);
   unsigned int encodedLen = encode_base64_length(auth.length());
   unsigned char encoded[encodedLen + 1];
   encode_base64((unsigned char*)auth.c_str(), auth.length(), encoded);
   encoded[encodedLen] = '\0';
-  return String("Basic ") + String((char*)encoded);
+  cached = String("Basic ") + String((char*)encoded);
+  return cached;
 }
 
 void clearChecksumInEEPROM() {
