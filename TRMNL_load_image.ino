@@ -399,35 +399,58 @@ public:
 };
 
 bool fetchRawImageAndDisplay() {
-  initFrameBuffers();
-  if (!frameBufferInited) {
-    Serial.println("[Render] Frame buffers not available, using full render");
-  }
-  
-  hasChanges = false;
-  changedMinY = FRAME_HEIGHT;
-  changedMaxY = -1;
-  
   HTTPClient http;
   WiFiClientSecure client;
   client.setInsecure();
+  client.setTimeout(15000);
   http.begin(client, API_URL_IMAGE);
-  http.setTimeout(15000);
+  http.setTimeout(20000);
   http.addHeader("Authorization", getBasicAuthHeader());
+  http.addHeader("Accept", "image/png");
 
   Serial.println("Fetching raw image...");
+  Serial.printf("URL: %s\n", API_URL_IMAGE);
   Serial.printf("[Heap] Fore bild-fetch: %u bytes fritt\n", ESP.getFreeHeap());
 
+  Serial.println("Calling http.GET()...");
+  Serial.printf("WiFi status: %d\n", WiFi.status());
+  
+  Serial.println("Re-initializing client...");
+  WiFiClientSecure* clientPtr = new WiFiClientSecure();
+  clientPtr->setInsecure();
+  http.begin(*clientPtr, API_URL_IMAGE);
+  http.setTimeout(20000);
+  http.addHeader("Authorization", getBasicAuthHeader());
+  http.addHeader("Accept", "image/png");
+
+  Serial.println("Calling GET...");
   int code = http.GET();
+  Serial.printf("http.GET() returned: %d\n", code);
   if (code != HTTP_CODE_OK) {
     Serial.printf("Image HTTP error: %d\n", code);
+    Serial.println("Retrying with new client...");
     http.end();
-    return false;
+    delete clientPtr;
+    delay(1000);
+    clientPtr = new WiFiClientSecure();
+    clientPtr->setInsecure();
+    http.begin(*clientPtr, API_URL_IMAGE);
+    http.setTimeout(20000);
+    http.addHeader("Authorization", getBasicAuthHeader());
+    http.addHeader("Accept", "image/png");
+    code = http.GET();
+    Serial.printf("Retry http.GET() returned: %d\n", code);
+    if (code != HTTP_CODE_OK) {
+      http.end();
+      delete clientPtr;
+      return false;
+    }
   }
 
   BufStream sink;
   http.writeToStream(&sink);
   http.end();
+  delete clientPtr;
 
   uint8_t* imgBuffer = sink.buf;
   int      bytesRead = sink.len;
@@ -438,6 +461,14 @@ bool fetchRawImageAndDisplay() {
     Serial.println("No image data received");
     sink.clear();
     return false;
+  }
+
+  hasChanges = false;
+  changedMinY = FRAME_HEIGHT;
+  changedMaxY = -1;
+  initFrameBuffers();
+  if (!frameBufferInited) {
+    Serial.println("[Render] Frame buffers not available, using full render");
   }
 
   bool isRawPNG = (bytesRead >= 4 &&
@@ -468,9 +499,7 @@ bool fetchRawImageAndDisplay() {
     Serial.printf("Base64 decoded: %d bytes\n", pngBytes);
   }
 
-  if (frameBufferInited) {
-    epd.fillScreen(TFT_WHITE);
-  }
+  epd.fillScreen(TFT_WHITE);
   
   int16_t rc = png.openRAM(pngBuffer, pngBytes, PNGDraw);
   if (rc != PNG_SUCCESS) {
@@ -490,26 +519,8 @@ bool fetchRawImageAndDisplay() {
     return false;
   }
 
-  if (!frameBufferInited) {
-    epd.update();
-    return true;
-  }
-
-  if (!hasChanges) {
-    Serial.println("[Render] No pixels changed, skipping e-ink update");
-    return true;
-  }
-
-  int regionHeight = changedMaxY - changedMinY + 1;
-  Serial.printf("[Render] Changed rows: %d-%d (%d rows)\n", changedMinY, changedMaxY, regionHeight);
-
-  if (isFirstDraw) {
-    epd.update();
-    isFirstDraw = false;
-  } else {
-    epd.updataPartial(0, changedMinY, FRAME_WIDTH, regionHeight);
-  }
-
+  epd.fillScreen(TFT_WHITE);
+  epd.update();
   commitCurrentFrame();
   return true;
 }
@@ -544,7 +555,21 @@ void fetchAndDisplayImage() {
     return;
   }
 
-  String currentChecksum = doc["currentChecksum"] | "";
+  JsonObject root = doc.as<JsonObject>();
+  if (root.isNull()) {
+    JsonArray arr = doc.as<JsonArray>();
+    if (arr.isNull() || arr.size() == 0) {
+      Serial.println("Empty response");
+      return;
+    }
+    root = arr[0].as<JsonObject>();
+    if (root.isNull()) {
+      Serial.println("Invalid array element");
+      return;
+    }
+  }
+
+  String currentChecksum = root["currentChecksum"] | "";
   if (currentChecksum.isEmpty()) {
     Serial.println("No currentChecksum in response");
     return;
@@ -557,7 +582,7 @@ void fetchAndDisplayImage() {
 
   Serial.printf("New image: %s -> %s\n", storedChecksum.c_str(), currentChecksum.c_str());
 
-  JsonArray changes = doc["changes"];
+  JsonArray changes = root["changes"];
   if (changes.isNull() || changes.size() == 0) {
     Serial.println("No changes in diff");
     storedChecksum = currentChecksum;
@@ -590,22 +615,35 @@ void fetchAndDisplayImage() {
     String regionData = httpRegion.getString();
     httpRegion.end();
 
-    uint8_t* decoded = nullptr;
-    int decodedLen = 0;
+    Serial.printf("  Region data: %d bytes\n", regionData.length());
+
+    String base64Data = regionData;
 
     if (regionData.length() >= 4 &&
         (uint8_t)regionData[0] == 0x89 && (uint8_t)regionData[1] == 0x50) {
+      base64Data = "";
+    } else if (regionData.indexOf("data:image") != -1) {
+      int commaIdx = regionData.indexOf(",");
+      if (commaIdx != -1) {
+        base64Data = regionData.substring(commaIdx + 1);
+      }
+    }
+
+    uint8_t* decoded = nullptr;
+    int decodedLen = 0;
+
+    if (base64Data.length() == 0) {
       decoded = (uint8_t*)malloc(regionData.length());
       if (decoded) {
         memcpy(decoded, regionData.c_str(), regionData.length());
         decodedLen = regionData.length();
       }
     } else {
-      unsigned char* inputBuf = (unsigned char*)regionData.c_str();
-      unsigned int decLen = decode_base64_length(inputBuf, regionData.length());
+      unsigned char* inputBuf = (unsigned char*)base64Data.c_str();
+      unsigned int decLen = decode_base64_length(inputBuf, base64Data.length());
       decoded = (uint8_t*)malloc(decLen);
       if (decoded) {
-        decodedLen = decode_base64(inputBuf, regionData.length(), decoded);
+        decodedLen = decode_base64(inputBuf, base64Data.length(), decoded);
       }
     }
 
@@ -642,6 +680,10 @@ void fetchAndDisplayImage() {
   storedChecksum = currentChecksum;
   saveChecksumToEEPROM(currentChecksum);
   hasValidImage = true;
+  initFrameBuffers();
+  if (!frameBufferInited) {
+    Serial.println("[Render] Frame buffers not available, using full render");
+  }
 }
 
 void drawInitialScreen() {
@@ -710,8 +752,26 @@ void setup() {
 
   Serial.printf("[Heap] Efter WiFi: %u bytes fritt\n", ESP.getFreeHeap());
 
+  delay(1000);
+
   if (WiFi.status() == WL_CONNECTED) {
-    fetchAndDisplayImage();
+    if (!isTimerWake) {
+      reconnectWiFi();
+      delay(500);
+      bool success = fetchRawImageAndDisplay();
+      if (success) {
+        storedChecksum = fetchChecksum();
+        if (!storedChecksum.isEmpty()) {
+          saveChecksumToEEPROM(storedChecksum);
+          Serial.printf("Sparad checksum: %s\n", storedChecksum.c_str());
+        }
+      } else {
+        storedChecksum = "";
+        clearChecksumInEEPROM();
+      }
+    } else {
+      fetchAndDisplayImage();
+    }
   } else {
     Serial.println("WiFi misslyckades, sover ändå.");
   }
