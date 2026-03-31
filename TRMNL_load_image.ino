@@ -297,6 +297,7 @@ String fetchChecksum() {
   String payload = http.getString();
   http.end();
   Serial.printf("[Heap] Efter checksum-fetch: %u bytes fritt, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
+  Serial.printf("Checksum raw response: %s\n", payload.c_str());
 
   StaticJsonDocument<256> doc;
   DeserializationError err = deserializeJson(doc, payload);
@@ -319,6 +320,7 @@ ImageDiffResult fetchImageDiff(const String& previousChecksumParam) {
   if (previousChecksumParam.length() > 0) {
     url += "&previous=" + previousChecksumParam;
   }
+  Serial.printf("Fetching image diff from: %s\n", url.c_str());
   http.begin(client, url);
   http.setTimeout(10000);
   http.addHeader("Authorization", getBasicAuthHeader());
@@ -337,6 +339,7 @@ ImageDiffResult fetchImageDiff(const String& previousChecksumParam) {
   String payload = http.getString();
   http.end();
   Serial.printf("[Heap] After diff-fetch: %u bytes free, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
+  Serial.printf("Raw response: %s\n", payload.c_str());
 
   StaticJsonDocument<4096> doc;
   DeserializationError err = deserializeJson(doc, payload);
@@ -345,9 +348,31 @@ ImageDiffResult fetchImageDiff(const String& previousChecksumParam) {
     return result;
   }
 
-  JsonArray changes = doc["changes"];
+  JsonObject root;
+  if (doc.is<JsonArray>()) {
+    JsonArray arr = doc.as<JsonArray>();
+    if (arr.size() > 0) {
+      root = arr[0].as<JsonObject>();
+    }
+  } else {
+    root = doc.as<JsonObject>();
+  }
+
+  if (root.isNull()) {
+    Serial.println("No valid JSON object in response");
+    return result;
+  }
+
+  JsonArray changes = root["changes"];
+  result.currentChecksum = root["currentChecksum"] | "";
+  result.previousChecksum = root["previousChecksum"] | "";
+  
+  Serial.printf("Current checksum: %s\n", result.currentChecksum.c_str());
+  Serial.printf("Previous checksum: %s\n", result.previousChecksum.c_str());
+
   if (changes.isNull()) {
     Serial.println("No changes array in response");
+    Serial.printf("Found 0 changes, current: %s\n", result.currentChecksum.c_str());
     return result;
   }
 
@@ -361,9 +386,6 @@ ImageDiffResult fetchImageDiff(const String& previousChecksumParam) {
     result.changeCount++;
   }
 
-  result.currentChecksum = doc["currentChecksum"] | "";
-  result.previousChecksum = doc["previousChecksum"] | "";
-  
   Serial.printf("Found %d changes, current: %s\n", result.changeCount, result.currentChecksum.c_str());
   return result;
 }
