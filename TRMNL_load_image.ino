@@ -310,7 +310,7 @@ String fetchChecksum() {
   return doc["checksum"] | "";
 }
 
-ImageDiffResult fetchImageDiff(const String& previousChecksumParam) {
+ImageDiffResult fetchImageDiff() {
   ImageDiffResult result = {{}, 0, "", ""};
   
   HTTPClient http;
@@ -318,9 +318,6 @@ ImageDiffResult fetchImageDiff(const String& previousChecksumParam) {
   client.setInsecure();
   
   String url = String(API_URL_DIFF);
-  if (previousChecksumParam.length() > 0) {
-    url += "&previous=" + previousChecksumParam;
-  }
   Serial.printf("Fetching image diff from: %s\n", url.c_str());
   http.begin(client, url);
   http.setTimeout(10000);
@@ -678,9 +675,9 @@ void fetchAndDisplayImage(bool isColdBoot) {
       wakeCounter = 0;
     } else {
       Serial.println("Fetching partial updates via imageDiff");
-      ImageDiffResult diff = fetchImageDiff(storedChecksum);
+      ImageDiffResult diff = fetchImageDiff();
       
-      if (diff.changeCount == 0) {
+      if (diff.changeCount == 0 || diff.currentChecksum == storedChecksum) {
         Serial.println("No changes detected");
         return;
       }
@@ -702,7 +699,7 @@ void fetchAndDisplayImage(bool isColdBoot) {
     bool success = fetchRawImageAndDisplay();
     
     if (success) {
-      ImageDiffResult diff = fetchImageDiff(storedChecksum);
+      ImageDiffResult diff = fetchImageDiff();
       storedChecksum = diff.currentChecksum;
       previousChecksum = diff.previousChecksum;
       saveChecksumToEEPROM(storedChecksum);
