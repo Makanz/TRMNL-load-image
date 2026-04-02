@@ -396,7 +396,7 @@ String fetchRegionImage(int x, int y, int width, int height) {
   client.setInsecure();
   
   String url = String(API_URL_REGION) + "&x=" + String(x) + "&y=" + String(y) + 
-              "&width=" + String(width) + "&height=" + String(height);
+              "&w=" + String(width) + "&h=" + String(height);
   http.begin(client, url);
   http.setTimeout(15000);
   http.addHeader("Authorization", getBasicAuthHeader());
