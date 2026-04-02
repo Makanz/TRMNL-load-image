@@ -27,7 +27,8 @@ uint32_t wakeCounter = 0;
 
 const uint64_t SLEEP_DURATION_US = (uint64_t)REFRESH_INTERVAL_MINUTES * 60ULL * 1000000ULL;
 const uint32_t FULL_FETCH_WAKE_COUNT = FULL_FETCH_INTERVAL_HOURS * 60 / REFRESH_INTERVAL_MINUTES;
-#define EEPROM_WAKE_COUNTER_OFFSET 64
+#define EEPROM_CHECKSUM_MAX_LEN    71   // "sha256:" (7) + 64 hex digits
+#define EEPROM_WAKE_COUNTER_OFFSET 76   // 72 bytes for checksum+null, 4-byte aligned
 
 struct ImageChange {
   int x;
@@ -247,8 +248,8 @@ void clearChecksumInEEPROM() {
 }
 
 void saveChecksumToEEPROM(const String& checksum) {
-  for (int i = 0; i < 62 && i < (int)checksum.length(); i++) EEPROM.write(i, checksum[i]);
-  EEPROM.write(62, '\0');
+  for (int i = 0; i < EEPROM_CHECKSUM_MAX_LEN && i < (int)checksum.length(); i++) EEPROM.write(i, checksum[i]);
+  EEPROM.write(EEPROM_CHECKSUM_MAX_LEN, '\0');
   EEPROM.commit();
 }
 
@@ -271,7 +272,7 @@ uint32_t loadWakeCounterFromEEPROM() {
 
 String loadChecksumFromEEPROM() {
   String checksum = ""; char c;
-  for (int i = 0; i < 62; i++) { c = EEPROM.read(i); if (c == '\0') break; checksum += c; }
+  for (int i = 0; i < EEPROM_CHECKSUM_MAX_LEN; i++) { c = EEPROM.read(i); if (c == '\0') break; checksum += c; }
   return checksum;
 }
 
@@ -416,14 +417,23 @@ String fetchRegionImage(int x, int y, int width, int height) {
   http.end();
   Serial.printf("[Heap] After region-fetch: %u bytes free, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
 
-  StaticJsonDocument<4096> doc;
+  DynamicJsonDocument doc(payload.length() + 512);
   DeserializationError err = deserializeJson(doc, payload);
   if (err) {
     Serial.printf("Region JSON error: %s\n", err.c_str());
     return "";
   }
 
-  String imageData = doc["image"] | "";
+  JsonObject root;
+  if (doc.is<JsonArray>()) {
+    JsonArray arr = doc.as<JsonArray>();
+    if (arr.size() > 0) root = arr[0].as<JsonObject>();
+  } else {
+    root = doc.as<JsonObject>();
+  }
+  if (root.isNull()) return "";
+
+  String imageData = root["image"] | "";
   return imageData;
 }
 
