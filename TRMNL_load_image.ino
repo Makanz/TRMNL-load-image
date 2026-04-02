@@ -438,6 +438,14 @@ String fetchRegionImage(int x, int y, int width, int height) {
 }
 
 bool fetchAndRenderRegion(int x, int y, int width, int height) {
+  // UC8179 operates on 8-pixel (1-byte) horizontal boundaries. Align the
+  // clear and refresh areas to avoid boundary artifacts. The PNG is still
+  // decoded at the original position — only the erase and update window expand.
+  int adjX = (x / 8) * 8;
+  int adjW = (((x + width  + 7) / 8) * 8) - adjX;
+  int adjY = (y / 8) * 8;
+  int adjH = (((y + height + 7) / 8) * 8) - adjY;
+
   String imageData = fetchRegionImage(x, y, width, height);
   if (imageData.isEmpty()) {
     Serial.println("Failed to fetch region image");
@@ -465,7 +473,7 @@ bool fetchAndRenderRegion(int x, int y, int width, int height) {
   Serial.printf("Region decoded: %d bytes\n", actualLen);
   Serial.printf("[Heap] After region decode: %u bytes free\n", ESP.getFreeHeap());
   
-  epd.fillRect(x, y, width, height, TFT_WHITE);
+  epd.fillRect(adjX, adjY, adjW, adjH, TFT_WHITE);
   
   regionOffsetX = x;
   regionOffsetY = y;
@@ -486,8 +494,8 @@ bool fetchAndRenderRegion(int x, int y, int width, int height) {
     return false;
   }
   
-  epd.updataPartial(x, y, width, height);
-  Serial.printf("Rendered region (%d,%d)\n", x, y);
+  epd.updataPartial(adjX, adjY, adjW, adjH);
+  Serial.printf("Rendered region (%d,%d %dx%d) aligned to (%d,%d %dx%d)\n", x, y, width, height, adjX, adjY, adjW, adjH);
   
   return true;
 }
