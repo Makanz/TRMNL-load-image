@@ -19,6 +19,7 @@ EPaper epd = EPaper();
 PNG png;
 
 const int BUTTON_1 = D1;
+const int BUTTON_2 = D2;
 
 String storedChecksum = "";
 String previousChecksum = "";
@@ -780,6 +781,14 @@ void setup() {
     saveWakeCounterToEEPROM(0);
   }
 
+  bool forceFullFetch = !isTimerWake;
+
+  pinMode(BUTTON_2, INPUT_PULLUP);
+  if (digitalRead(BUTTON_2) == LOW) {
+    Serial.println("Button 2 pressed – forcing full image fetch");
+    forceFullFetch = true;
+  }
+
   epd.init();
   epd.setRotation(0);
   epd.setTextColor(TFT_BLACK);
@@ -799,7 +808,7 @@ void setup() {
   Serial.printf("[Heap] Efter WiFi: %u bytes fritt\n", ESP.getFreeHeap());
 
   if (WiFi.status() == WL_CONNECTED) {
-    fetchAndDisplayImage(!isTimerWake);
+    fetchAndDisplayImage(forceFullFetch);
   } else {
     Serial.println("WiFi misslyckades, sover ändå.");
   }
