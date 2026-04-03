@@ -677,20 +677,30 @@ void fetchAndDisplayImage(bool isColdBoot) {
       Serial.println("Fetching partial updates via imageDiff");
       ImageDiffResult diff = fetchImageDiff();
       
-      if (diff.changeCount == 0 || diff.currentChecksum == storedChecksum) {
+      if (diff.changeCount == 0) {
+        if (!diff.currentChecksum.isEmpty() && diff.currentChecksum != storedChecksum) {
+          Serial.println("Checksum mismatch men inga ändringar – tvingar full hämtning för att synka");
+          shouldFullFetch = true;
+        } else {
+          Serial.println("No changes detected");
+          return;
+        }
+      } else if (diff.currentChecksum == storedChecksum) {
         Serial.println("No changes detected");
         return;
       }
       
-      bool success = fetchPartialImage(diff);
-      
-      if (success) {
-        storedChecksum = diff.currentChecksum;
-        previousChecksum = diff.previousChecksum;
-        saveChecksumToEEPROM(storedChecksum);
-        hasValidImage = true;
+      if (!shouldFullFetch) {
+        bool success = fetchPartialImage(diff);
+        
+        if (success) {
+          storedChecksum = diff.currentChecksum;
+          previousChecksum = diff.previousChecksum;
+          saveChecksumToEEPROM(storedChecksum);
+          hasValidImage = true;
+        }
+        return;
       }
-      return;
     }
   }
 
