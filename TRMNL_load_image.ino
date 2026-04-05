@@ -9,14 +9,12 @@
 #include <ArduinoJson.h>
 #include <EEPROM.h>
 #include <esp_sleep.h>
-#define MAX_IMAGE_WIDTH 800
-#include <PNGdec.h>
+
 
 #include "config.h"
 #include "secrets.h"
 
 EPaper epd = EPaper();
-PNG png;
 
 const int BUTTON_1 = D1;
 
@@ -55,8 +53,8 @@ struct ImageDiffResult {
 #define ROW_H       36   // radhöjd för partial update
 
 bool isFirstDraw = true;
-static int partialUpdateCount = 0;
-const int FULL_REFRESH_EVERY = 20;
+static int  partialUpdateCount = 0;
+static const int FULL_REFRESH_EVERY = 20;
 
 // Föregående värden per rad
 static wl_status_t prevWifiStatus = (wl_status_t)-1;
@@ -64,24 +62,6 @@ static String prevIP      = "";
 static int    prevRSSI    = 0;
 static int    prevChannel = 0;
 static String prevBSSID   = "";
-
-static int regionOffsetX = 0;
-static int regionOffsetY = 0;
-
-int PNGDraw(PNGDRAW* pDraw) {
-  uint16_t lineBuffer[MAX_IMAGE_WIDTH];
-  png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_BIG_ENDIAN, 0xFFFFFFFF);
-  
-  for (int x = 0; x < pDraw->iWidth; x++) {
-    uint16_t p = lineBuffer[x];
-    uint8_t r = (p >> 8) & 0xF8;
-    uint8_t g = (p >> 3) & 0xFC;
-    uint8_t b = (p << 3) & 0xF8;
-    uint8_t lum = (r * 77 + g * 150 + b * 29) >> 8;
-    epd.drawPixel(x + regionOffsetX, pDraw->y + regionOffsetY, lum >= 128 ? TFT_WHITE : TFT_BLACK);
-  }
-  return 1;
-}
 
 String rssiQuality(int rssi) {
   if (rssi >= -50) return "Utmarkt";
@@ -388,173 +368,81 @@ ImageDiffResult fetchImageDiff() {
   return result;
 }
 
-String fetchRegionImage(int x, int y, int width, int height) {
-  HTTPClient http;
-  WiFiClientSecure client;
-  client.setInsecure();
-  
-  String url = String(API_URL_REGION) + "&x=" + String(x) + "&y=" + String(y) + 
-              "&w=" + String(width) + "&h=" + String(height);
-  http.begin(client, url);
-  http.setTimeout(15000);
-  http.addHeader("Authorization", getBasicAuthHeader());
-  http.addHeader("Accept", "application/json");
+// Decodes a 1-bit BMP stream on-the-fly as data arrives via http.writeToStream().
+// No large heap buffer needed — draws each row directly to the display.
+class BMPDecodeStream : public Stream {
+  uint8_t  _hdr[62];
+  uint8_t  _hdrPos   = 0;
+  uint32_t _pixelOffset;
+  int32_t  _width, _height;
+  int32_t  _absHeight;
+  int      _rowBytes;
+  uint8_t  _row[100]; // max for 800-pixel 1-bit row (word-aligned: (800+31)/32*4 = 100)
+  int      _rowPos   = 0;
+  int      _rowsDone = 0;
+  uint32_t _bytesSeen = 0; // bytes seen after the 62-byte header
+  bool     _valid    = false;
+  bool     _done     = false;
 
-  Serial.printf("Fetching region (%d,%d,%d,%d)...\n", x, y, width, height);
-  Serial.printf("[Heap] Before region-fetch: %u bytes free\n", ESP.getFreeHeap());
-
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("Region HTTP error: %d\n", code);
-    http.end();
-    return "";
-  }
-
-  String payload = http.getString();
-  http.end();
-  Serial.printf("[Heap] After region-fetch: %u bytes free, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
-
-  DynamicJsonDocument doc(payload.length() + 512);
-  DeserializationError err = deserializeJson(doc, payload);
-  if (err) {
-    Serial.printf("Region JSON error: %s\n", err.c_str());
-    return "";
-  }
-
-  JsonObject root;
-  if (doc.is<JsonArray>()) {
-    JsonArray arr = doc.as<JsonArray>();
-    if (arr.size() > 0) root = arr[0].as<JsonObject>();
-  } else {
-    root = doc.as<JsonObject>();
-  }
-  if (root.isNull()) return "";
-
-  String imageData = root["image"] | "";
-  return imageData;
-}
-
-bool fetchAndRenderRegion(int x, int y, int width, int height) {
-  // UC8179 operates on 8-pixel (1-byte) horizontal boundaries. Align the
-  // clear and refresh areas to avoid boundary artifacts. The PNG is still
-  // decoded at the original position — only the erase and update window expand.
-  int adjX = (x / 8) * 8;
-  int adjW = (((x + width  + 7) / 8) * 8) - adjX;
-  int adjY = (y / 8) * 8;
-  int adjH = (((y + height + 7) / 8) * 8) - adjY;
-
-  String imageData = fetchRegionImage(x, y, width, height);
-  if (imageData.isEmpty()) {
-    Serial.println("Failed to fetch region image");
-    return false;
-  }
-  
-  Serial.printf("[Heap] After region fetch: %u bytes free\n", ESP.getFreeHeap());
-  
-  if (!imageData.startsWith("data:image/png;base64,")) {
-    Serial.println("Invalid image data format");
-    return false;
-  }
-  
-  String base64Data = imageData.substring(22);
-  
-  unsigned int decodedLen = decode_base64_length((unsigned char*)base64Data.c_str(), base64Data.length());
-  uint8_t* decodedBuffer = (uint8_t*)malloc(decodedLen);
-  if (!decodedBuffer) {
-    Serial.println("malloc failed for region decode");
-    return false;
-  }
-  
-  int actualLen = decode_base64((unsigned char*)base64Data.c_str(), base64Data.length(), decodedBuffer);
-  
-  Serial.printf("Region decoded: %d bytes\n", actualLen);
-  Serial.printf("[Heap] After region decode: %u bytes free\n", ESP.getFreeHeap());
-  
-  epd.fillRect(adjX, adjY, adjW, adjH, TFT_WHITE);
-  
-  regionOffsetX = x;
-  regionOffsetY = y;
-  
-  int16_t rc = png.openRAM(decodedBuffer, actualLen, PNGDraw);
-  if (rc != PNG_SUCCESS) {
-    Serial.printf("Region PNG open error: %d\n", rc);
-    free(decodedBuffer);
-    return false;
-  }
-  
-  rc = png.decode(NULL, 0);
-  png.close();
-  free(decodedBuffer);
-  
-  if (rc != PNG_SUCCESS) {
-    Serial.printf("Region PNG decode error: %d\n", rc);
-    return false;
-  }
-  
-  epd.updataPartial(adjX, adjY, adjW, adjH);
-  Serial.printf("Rendered region (%d,%d %dx%d) aligned to (%d,%d %dx%d)\n", x, y, width, height, adjX, adjY, adjW, adjH);
-  
-  return true;
-}
-
-bool fetchPartialImage(const ImageDiffResult& diffResult) {
-  Serial.printf("Fetching %d changed regions...\n", diffResult.changeCount);
-  
-  for (int i = 0; i < diffResult.changeCount; i++) {
-    const ImageChange& change = diffResult.changes[i];
-    Serial.printf("Region %d: (%d,%d) %dx%d\n", i, change.x, change.y, change.width, change.height);
-    
-    if (!fetchAndRenderRegion(change.x, change.y, change.width, change.height)) {
-      Serial.printf("Failed to render region %d\n", i);
-      return false;
-    }
-    
-    partialUpdateCount++;
-  }
-  
-  if (partialUpdateCount >= FULL_REFRESH_EVERY) {
-    Serial.println("Performing full refresh to prevent ghosting");
-    epd.update();
-    partialUpdateCount = 0;
-  }
-  
-  return true;
-}
-
-// Stream sink that accumulates binary data into a heap buffer.
-// Used with http.writeToStream() which correctly decodes chunked encoding,
-// unlike getStreamPtr() which returns the raw TCP stream.
-class BufStream : public Stream {
 public:
-  uint8_t* buf = nullptr;
-  int      len = 0;
-  int      capacity = 0;
-
-  ~BufStream() { free(buf); }
-
-  void clear() {
-    free(buf);
-    buf = nullptr;
-    len = 0;
-    capacity = 0;
-  }
-
-  size_t write(uint8_t c) override { return write(&c, 1); }
+  bool valid()    const { return _valid; }
+  int  rowsDone() const { return _rowsDone; }
 
   size_t write(const uint8_t* data, size_t sz) override {
-    if (len + sz > capacity) {
-      int newCap = capacity == 0 ? 256 : capacity * 2;
-      while (newCap < len + sz) newCap *= 2;
-      uint8_t* nb = (uint8_t*)realloc(buf, newCap);
-      if (!nb) return 0;
-      buf = nb;
-      capacity = newCap;
+    for (size_t i = 0; i < sz; i++) {
+      uint8_t b = data[i];
+
+      // Phase 1: accumulate 62-byte header (14 file header + 40 DIB header + 8 color table)
+      if (_hdrPos < 62) {
+        _hdr[_hdrPos++] = b;
+        if (_hdrPos == 62) {
+          if (_hdr[0] != 0x42 || _hdr[1] != 0x4D) {
+            Serial.println("BMP magic mismatch");
+            return sz;
+          }
+          _pixelOffset = _hdr[10]|(_hdr[11]<<8)|(_hdr[12]<<16)|(_hdr[13]<<24);
+          _width  = (int32_t)(_hdr[18]|(_hdr[19]<<8)|(_hdr[20]<<16)|(_hdr[21]<<24));
+          _height = (int32_t)(_hdr[22]|(_hdr[23]<<8)|(_hdr[24]<<16)|(_hdr[25]<<24));
+          uint16_t bpp  = _hdr[28] | (_hdr[29]<<8);
+          uint32_t comp = _hdr[30]|(_hdr[31]<<8)|(_hdr[32]<<16)|(_hdr[33]<<24);
+          _absHeight = abs(_height);
+          if (bpp != 1 || comp != 0 ||
+              _absHeight == 0 || _absHeight > SCREEN_HEIGHT ||
+              _width  <= 0   || _width  > SCREEN_WIDTH) {
+            Serial.printf("Unsupported BMP: %ldx%ld %dbpp comp=%lu\n", _width, _absHeight, bpp, comp);
+            return sz;
+          }
+          _rowBytes = ((_width + 31) / 32) * 4;
+          _valid = true;
+          Serial.printf("BMP: %ldx%ld, rowSize=%d, pixelOffset=%lu\n", _width, _absHeight, _rowBytes, _pixelOffset);
+          epd.fillScreen(TFT_WHITE);
+        }
+        continue;
+      }
+
+      if (!_valid || _done) continue;
+
+      // Phase 2: skip bytes between end of 62-byte read and actual pixel data offset
+      _bytesSeen++;
+      if (_bytesSeen <= _pixelOffset - 62) continue;
+
+      // Phase 3: accumulate row bytes, draw when a full row is ready
+      _row[_rowPos++] = b;
+      if (_rowPos == _rowBytes) {
+        int displayY = (_height < 0) ? _rowsDone : (_absHeight - 1 - _rowsDone);
+        for (int x = 0; x < _width; x++) {
+          bool isWhite = (_row[x >> 3] >> (7 - (x & 7))) & 0x01;
+          epd.drawPixel(x, displayY, isWhite ? TFT_WHITE : TFT_BLACK);
+        }
+        _rowsDone++;
+        _rowPos = 0;
+        if (_rowsDone >= _absHeight) _done = true;
+      }
     }
-    memcpy(buf + len, data, sz);
-    len += sz;
     return sz;
   }
 
+  size_t write(uint8_t c) override { return write(&c, 1); }
   int available() override { return 0; }
   int read()      override { return -1; }
   int peek()      override { return -1; }
@@ -571,6 +459,7 @@ bool fetchRawImageAndDisplay() {
   Serial.println("Fetching raw image...");
   Serial.printf("[Heap] Fore bild-fetch: %u bytes fritt\n", ESP.getFreeHeap());
 
+
   int code = http.GET();
   if (code != HTTP_CODE_OK) {
     Serial.printf("Image HTTP error: %d\n", code);
@@ -578,79 +467,19 @@ bool fetchRawImageAndDisplay() {
     return false;
   }
 
-  // writeToStream handles Transfer-Encoding: chunked correctly.
-  // getStreamPtr() would return the raw TCP stream including chunk-size headers,
-  // causing the PNG magic check to fail.
-  BufStream sink;
-  http.writeToStream(&sink);
+  BMPDecodeStream decoder;
+  http.writeToStream(&decoder);
   http.end();
 
-  uint8_t* imgBuffer = sink.buf;
-  int      bytesRead = sink.len;
-
-  Serial.printf("[Heap] PNG laddad: %d bytes, fritt: %u bytes\n", bytesRead, ESP.getFreeHeap());
-
-  if (bytesRead == 0) {
-    Serial.println("No image data received");
-    sink.clear();
+  if (!decoder.valid()) {
+    Serial.println("BMP decode failed");
     return false;
   }
 
-  // Detect format: PNG magic = 89 50 4E 47
-  bool isRawPNG = (bytesRead >= 4 &&
-                   imgBuffer[0] == 0x89 && imgBuffer[1] == 0x50 &&
-                   imgBuffer[2] == 0x4E && imgBuffer[3] == 0x47);
-
-  uint8_t* pngBuffer = imgBuffer;
-  int      pngBytes  = bytesRead;
-  uint8_t* decodedBuffer = nullptr;
-
-  if (!isRawPNG) {
-    Serial.println("Raw PNG magic not found, trying base64 decode...");
-    // Strip trailing whitespace/newlines from base64 string
-    while (pngBytes > 0 && (imgBuffer[pngBytes - 1] == '\n' ||
-                              imgBuffer[pngBytes - 1] == '\r' ||
-                              imgBuffer[pngBytes - 1] == ' '))
-      pngBytes--;
-
-    unsigned int decodedLen = decode_base64_length(imgBuffer, pngBytes);
-    decodedBuffer = (uint8_t*)malloc(decodedLen);
-    if (!decodedBuffer) {
-      Serial.println("malloc failed for base64 decode");
-      free(imgBuffer);
-      sink.buf = nullptr;
-      return false;
-    }
-    decode_base64(imgBuffer, pngBytes, decodedBuffer);
-    pngBuffer = decodedBuffer;
-    pngBytes  = (int)decodedLen;
-    Serial.printf("Base64 decoded: %d bytes\n", pngBytes);
-  }
-
-  int16_t rc = png.openRAM(pngBuffer, pngBytes, PNGDraw);
-  if (rc != PNG_SUCCESS) {
-    Serial.printf("PNG open error: %d\n", rc);
-    free(decodedBuffer);
-    free(imgBuffer);
-    sink.buf = nullptr;  // Prevent double-free in destructor
-    return false;
-  }
-
-  epd.fillScreen(TFT_WHITE);
-  regionOffsetX = 0;
-  regionOffsetY = 0;
-  rc = png.decode(NULL, 0);
-  png.close();
-  free(decodedBuffer);
-  free(imgBuffer);
-  sink.buf = nullptr;  // Prevent double-free in destructor
-
-  if (rc != PNG_SUCCESS) {
-    Serial.printf("PNG decode error: %d\n", rc);
-    return false;
-  }
-
+  Serial.printf("Drew %d rows\n", decoder.rowsDone());
+  Serial.println("Calling epd.update()...");
   epd.update();
+  Serial.println("BMP rendered successfully");
   return true;
 }
 
@@ -663,51 +492,29 @@ void fetchAndDisplayImage(bool isColdBoot) {
     Serial.println("Cold boot - fetching full image");
     shouldFullFetch = true;
     wakeCounter = 0;
-    partialUpdateCount = 0;
   } else {
     wakeCounter++;
     saveWakeCounterToEEPROM(wakeCounter);
     Serial.printf("Wake #%u, full fetch every %u\n", wakeCounter, FULL_FETCH_WAKE_COUNT);
-    
+
     if (wakeCounter >= FULL_FETCH_WAKE_COUNT) {
       Serial.println("Full fetch interval reached");
       shouldFullFetch = true;
       wakeCounter = 0;
     } else {
-      Serial.println("Fetching partial updates via imageDiff");
+      Serial.println("Checking for changes...");
       ImageDiffResult diff = fetchImageDiff();
-      
-      if (diff.changeCount == 0) {
-        if (!diff.currentChecksum.isEmpty() && diff.currentChecksum != storedChecksum) {
-          Serial.println("Checksum mismatch men inga ändringar – tvingar full hämtning för att synka");
-          shouldFullFetch = true;
-        } else {
-          Serial.println("No changes detected");
-          return;
-        }
-      } else if (diff.currentChecksum == storedChecksum) {
+      if (!diff.currentChecksum.isEmpty() && diff.currentChecksum == storedChecksum) {
         Serial.println("No changes detected");
         return;
       }
-      
-      if (!shouldFullFetch) {
-        bool success = fetchPartialImage(diff);
-        
-        if (success) {
-          storedChecksum = diff.currentChecksum;
-          previousChecksum = diff.previousChecksum;
-          saveChecksumToEEPROM(storedChecksum);
-          hasValidImage = true;
-        }
-        return;
-      }
+      shouldFullFetch = true;
     }
   }
 
   if (shouldFullFetch) {
     Serial.println("Fetching full image...");
     bool success = fetchRawImageAndDisplay();
-    
     if (success) {
       ImageDiffResult diff = fetchImageDiff();
       storedChecksum = diff.currentChecksum;
@@ -715,7 +522,6 @@ void fetchAndDisplayImage(bool isColdBoot) {
       saveChecksumToEEPROM(storedChecksum);
       saveWakeCounterToEEPROM(wakeCounter);
       hasValidImage = true;
-      partialUpdateCount = 0;
     }
   }
 }
@@ -740,8 +546,8 @@ void drawErrorScreen(const String& errorMsg) {
 void goToSleep() {
   Serial.printf("Går in i deep sleep i %d minuter...\n", REFRESH_INTERVAL_MINUTES);
   Serial.flush();
-  esp_sleep_enable_timer_wakeup(SLEEP_DURATION_US);
-  esp_deep_sleep_start();
+  // esp_sleep_enable_timer_wakeup(SLEEP_DURATION_US);
+  // esp_deep_sleep_start();
 }
 
 void setup() {
