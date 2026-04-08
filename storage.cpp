@@ -25,10 +25,10 @@ void saveWakeCounterToEEPROM(uint32_t counter) {
 
 uint32_t loadWakeCounterFromEEPROM() {
   uint32_t counter = 0;
-  counter = (EEPROM.read(EEPROM_WAKE_COUNTER_OFFSET) << 24) |
-            (EEPROM.read(EEPROM_WAKE_COUNTER_OFFSET + 1) << 16) |
-            (EEPROM.read(EEPROM_WAKE_COUNTER_OFFSET + 2) << 8) |
-            EEPROM.read(EEPROM_WAKE_COUNTER_OFFSET + 3);
+  counter = ((uint32_t)EEPROM.read(EEPROM_WAKE_COUNTER_OFFSET) << 24) |
+            ((uint32_t)EEPROM.read(EEPROM_WAKE_COUNTER_OFFSET + 1) << 16) |
+            ((uint32_t)EEPROM.read(EEPROM_WAKE_COUNTER_OFFSET + 2) << 8) |
+            (uint32_t)EEPROM.read(EEPROM_WAKE_COUNTER_OFFSET + 3);
   return counter;
 }
 

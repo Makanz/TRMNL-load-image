@@ -1,5 +1,9 @@
 #include "display_ui.h"
 
+#include "driver.h"
+#include <TFT_eSPI.h>
+#include <WiFi.h>
+
 #include "config.h"
 #include "secrets.h"
 #include "wifi_manager.h"
@@ -68,11 +72,11 @@ void drawWiFiStatusScreen(EPaper& epd, FirmwareState& state) {
   }
 
   String statusStr;
-  if (snapshot.status == WL_CONNECTED) statusStr = "Ansluten";
-  else if (snapshot.status == WL_DISCONNECTED) statusStr = "Frånkopplad";
-  else if (snapshot.status == WL_CONNECT_FAILED) statusStr = "Anslutning misslyckades";
-  else if (snapshot.status == WL_NO_SSID_AVAIL) statusStr = "SSID ej hittad";
-  else statusStr = "Ansluter...";
+  if (snapshot.status == static_cast<int8_t>(WL_CONNECTED)) statusStr = "Connected";
+  else if (snapshot.status == static_cast<int8_t>(WL_DISCONNECTED)) statusStr = "Disconnected";
+  else if (snapshot.status == static_cast<int8_t>(WL_CONNECT_FAILED)) statusStr = "Connect failed";
+  else if (snapshot.status == static_cast<int8_t>(WL_NO_SSID_AVAIL)) statusStr = "SSID not found";
+  else statusStr = "Connecting...";
 
   if (state.wifiDisplay.isFirstDraw) {
     epd.fillScreen(TFT_WHITE);
@@ -82,11 +86,11 @@ void drawWiFiStatusScreen(EPaper& epd, FirmwareState& state) {
     epd.setTextSize(2);
     epd.drawString("SSID: " + String(WIFI_SSID), 20, ROW_SSID);
     epd.drawString("Status: " + statusStr, 20, ROW_STATUS);
-    if (snapshot.status == WL_CONNECTED) {
+    if (snapshot.status == static_cast<int8_t>(WL_CONNECTED)) {
       epd.drawString("IP: " + snapshot.ip, 20, ROW_IP);
       epd.drawString("Signal: " + String(snapshot.rssi) + " dBm (" + rssiQuality(snapshot.rssi) + ")", 20, ROW_SIGNAL);
       epd.drawString("BSSID: " + snapshot.bssid, 20, ROW_BSSID);
-      epd.drawString("Kanal: " + String(snapshot.channel), 20, ROW_CHANNEL);
+      epd.drawString("Channel: " + String(snapshot.channel), 20, ROW_CHANNEL);
     }
     epd.update();
     state.wifiDisplay.isFirstDraw = false;
@@ -104,7 +108,7 @@ void drawWiFiStatusScreen(EPaper& epd, FirmwareState& state) {
       updateRow(epd, state, ROW_BSSID, snapshot.bssid.length() > 0 ? "BSSID: " + snapshot.bssid : "");
     }
     if (snapshot.channel != state.wifiDisplay.prevChannel) {
-      updateRow(epd, state, ROW_CHANNEL, snapshot.channel != 0 ? "Kanal: " + String(snapshot.channel) : "");
+      updateRow(epd, state, ROW_CHANNEL, snapshot.channel != 0 ? "Channel: " + String(snapshot.channel) : "");
     }
   }
 

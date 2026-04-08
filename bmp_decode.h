@@ -3,8 +3,7 @@
 
 #include <Arduino.h>
 
-#include "driver.h"
-#include <TFT_eSPI.h>
+class EPaper;
 
 class BMPDecodeStream : public Stream {
  public:

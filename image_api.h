@@ -3,13 +3,10 @@
 
 #include <Arduino.h>
 
-#include "driver.h"
-#include <TFT_eSPI.h>
-
 #include "firmware_state.h"
 
-String getBasicAuthHeader();
-String fetchChecksum();
+class EPaper;
+
 ImageDiffResult fetchImageDiff();
 bool fetchRawImageAndDisplay(EPaper& epd);
 void fetchAndDisplayImage(EPaper& epd, FirmwareState& state, bool isColdBoot);

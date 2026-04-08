@@ -8,14 +8,14 @@
 
 #include "bmp_decode.h"
 #include "config.h"
+#include "driver.h"
 #include "secrets.h"
 #include "storage.h"
+#include <TFT_eSPI.h>
 
 namespace {
 
 const uint32_t FULL_FETCH_WAKE_COUNT = FULL_FETCH_INTERVAL_HOURS * 60 / REFRESH_INTERVAL_MINUTES;
-
-}  // namespace
 
 String getBasicAuthHeader() {
   static String cached;
@@ -42,7 +42,7 @@ String fetchChecksum() {
   http.addHeader("Accept", "application/json");
 
   Serial.println("Fetching checksum...");
-  Serial.printf("[Heap] Fore checksum-fetch: %u bytes fritt\n", ESP.getFreeHeap());
+  Serial.printf("[Heap] Before checksum-fetch: %u bytes free\n", ESP.getFreeHeap());
 
   int code = http.GET();
   if (code != HTTP_CODE_OK) {
@@ -53,7 +53,7 @@ String fetchChecksum() {
 
   String payload = http.getString();
   http.end();
-  Serial.printf("[Heap] Efter checksum-fetch: %u bytes fritt, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
+  Serial.printf("[Heap] After checksum-fetch: %u bytes free, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
   Serial.printf("Checksum raw response: %s\n", payload.c_str());
 
   StaticJsonDocument<256> doc;
@@ -65,6 +65,8 @@ String fetchChecksum() {
 
   return doc["checksum"] | "";
 }
+
+}  // namespace
 
 ImageDiffResult fetchImageDiff() {
   ImageDiffResult result;
@@ -155,7 +157,7 @@ bool fetchRawImageAndDisplay(EPaper& epd) {
   http.addHeader("Authorization", getBasicAuthHeader());
 
   Serial.println("Fetching raw image...");
-  Serial.printf("[Heap] Fore bild-fetch: %u bytes fritt\n", ESP.getFreeHeap());
+  Serial.printf("[Heap] Before image-fetch: %u bytes free\n", ESP.getFreeHeap());
 
   int code = http.GET();
   if (code != HTTP_CODE_OK) {

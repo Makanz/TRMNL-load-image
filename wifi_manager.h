@@ -6,6 +6,5 @@
 String rssiQuality(int rssi);
 WiFiStatusSnapshot readWiFiStatusSnapshot();
 void connectWiFi();
-void reconnectWiFi();
 
 #endif

@@ -19,7 +19,7 @@ const int BUTTON_1 = D1;
 const uint64_t SLEEP_DURATION_US = (uint64_t)REFRESH_INTERVAL_MINUTES * 60ULL * 1000000ULL;
 
 void goToSleep() {
-  Serial.printf("Går in i deep sleep i %d minuter...\n", REFRESH_INTERVAL_MINUTES);
+  Serial.printf("Entering deep sleep for %d minutes...\n", REFRESH_INTERVAL_MINUTES);
   Serial.flush();
   // esp_sleep_enable_timer_wakeup(SLEEP_DURATION_US);
   // esp_deep_sleep_start();
@@ -27,20 +27,20 @@ void goToSleep() {
 
 void setup() {
   Serial.begin(115200);
-  // Vänta max 3 s på Serial – blockerar inte fristående enhet
+  // Wait up to 3s for Serial - won't block standalone device
   unsigned long t0 = millis();
   while (!Serial && millis() - t0 < 3000) {}
 
   bool isTimerWake = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER;
 
-  Serial.println(isTimerWake ? "Vaknat från deep sleep" : "TRMNL Uppstart");
+  Serial.println(isTimerWake ? "Woke from deep sleep" : "TRMNL Startup");
   Serial.println("=====================");
 
   epd.init();
   epd.setRotation(0);
   epd.setTextColor(TFT_BLACK);
 
-  if (!EEPROM.begin(128)) {
+  if (!EEPROM.begin(EEPROM_SIZE)) {
     Serial.println("EEPROM.begin failed!");
     drawErrorScreen(epd, "EEPROM error!");
     delay(5000);
@@ -57,7 +57,7 @@ void setup() {
   }
 
   if (!isTimerWake) {
-    // Endast vid cold boot: visa "Connecting..."-skärm och WiFi-status
+    // Only on cold boot: show "Connecting..." screen and WiFi status
     drawInitialScreen(epd);
   }
 
@@ -68,17 +68,17 @@ void setup() {
     delay(3000);
   }
 
-  Serial.printf("[Heap] Efter WiFi: %u bytes fritt\n", ESP.getFreeHeap());
+  Serial.printf("[Heap] After WiFi: %u bytes free\n", ESP.getFreeHeap());
 
   if (WiFi.status() == WL_CONNECTED) {
     fetchAndDisplayImage(epd, firmwareState, !isTimerWake);
   } else {
-    Serial.println("WiFi misslyckades, sover ändå.");
+    Serial.println("WiFi failed, sleeping anyway.");
   }
 
   goToSleep();
 }
 
 void loop() {
-  // Når aldrig hit – deep sleep i setup() startar om enheten vid uppvakning
+  // Never reached - deep sleep in setup() restarts device on wake
 }

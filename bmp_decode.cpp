@@ -1,6 +1,11 @@
 #include "bmp_decode.h"
 
+#include "driver.h"
+#include <TFT_eSPI.h>
+
 #include "config.h"
+
+static_assert(SCREEN_WIDTH <= 800, "row_ buffer too small for SCREEN_WIDTH");
 
 BMPDecodeStream::BMPDecodeStream(EPaper& epd) : epd_(epd) {}
 

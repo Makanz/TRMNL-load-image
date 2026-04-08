@@ -3,10 +3,9 @@
 
 #include <Arduino.h>
 
-#include "driver.h"
-#include <TFT_eSPI.h>
-
 #include "firmware_state.h"
+
+class EPaper;
 
 void drawInitialScreen(EPaper& epd);
 void drawErrorScreen(EPaper& epd, const String& errorMsg);

@@ -2,11 +2,11 @@
 #define FIRMWARE_STATE_H
 
 #include <Arduino.h>
-#include <WiFi.h>
 
 constexpr size_t EEPROM_CHECKSUM_MAX_LEN = 71;
 constexpr int EEPROM_WAKE_COUNTER_OFFSET = 76;
 constexpr int MAX_IMAGE_CHANGES = 10;
+constexpr size_t EEPROM_SIZE = 128;
 
 struct ImageChange {
   int x = 0;
@@ -23,7 +23,7 @@ struct ImageDiffResult {
 };
 
 struct WiFiStatusSnapshot {
-  wl_status_t status = WL_DISCONNECTED;
+  int8_t status = -1;
   String ip = "";
   int rssi = 0;
   int channel = 0;
@@ -33,7 +33,7 @@ struct WiFiStatusSnapshot {
 struct WiFiDisplayState {
   bool isFirstDraw = true;
   int partialUpdateCount = 0;
-  wl_status_t prevWifiStatus = (wl_status_t)-1;
+  int8_t prevWifiStatus = -1;
   String prevIP = "";
   int prevRSSI = 0;
   int prevChannel = 0;

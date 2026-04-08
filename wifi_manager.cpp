@@ -6,20 +6,20 @@
 #include "secrets.h"
 
 String rssiQuality(int rssi) {
-  if (rssi >= -50) return "Utmarkt";
-  if (rssi >= -65) return "Bra";
-  if (rssi >= -75) return "Svag";
-  return "Dalig";
+  if (rssi >= -50) return "Excellent";
+  if (rssi >= -65) return "Good";
+  if (rssi >= -75) return "Weak";
+  return "Poor";
 }
 
 WiFiStatusSnapshot readWiFiStatusSnapshot() {
   WiFiStatusSnapshot snapshot;
 
-  snapshot.status = WiFi.status();
-  snapshot.rssi = (snapshot.status == WL_CONNECTED) ? WiFi.RSSI() : 0;
-  snapshot.ip = (snapshot.status == WL_CONNECTED) ? WiFi.localIP().toString() : "";
-  snapshot.channel = (snapshot.status == WL_CONNECTED) ? WiFi.channel() : 0;
-  snapshot.bssid = (snapshot.status == WL_CONNECTED) ? WiFi.BSSIDstr() : "";
+  snapshot.status = static_cast<int8_t>(WiFi.status());
+  snapshot.rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
+  snapshot.ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "";
+  snapshot.channel = (WiFi.status() == WL_CONNECTED) ? WiFi.channel() : 0;
+  snapshot.bssid = (WiFi.status() == WL_CONNECTED) ? WiFi.BSSIDstr() : "";
 
   return snapshot;
 }
@@ -69,12 +69,4 @@ void connectWiFi() {
 
   Serial.println("WiFi connection failed!");
   digitalWrite(LED_BUILTIN, LOW);
-}
-
-void reconnectWiFi() {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi disconnected, reconnecting...");
-    digitalWrite(LED_BUILTIN, LOW);
-    connectWiFi();
-  }
 }
