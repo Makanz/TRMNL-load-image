@@ -3,6 +3,7 @@
 #include <TFT_eSPI.h>
 #include <EEPROM.h>
 #include <esp_sleep.h>
+#include <WiFi.h>
 
 #include "config.h"
 #include "display_ui.h"
