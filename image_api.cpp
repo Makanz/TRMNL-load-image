@@ -123,6 +123,20 @@ ImageDiffResult fetchImageDiff() {
   result.currentChecksum = root["currentChecksum"] | "";
   result.previousChecksum = root["previousChecksum"] | "";
 
+  if (root.containsKey("refreshInterval")) {
+    uint32_t newInterval = root["refreshInterval"].as<uint32_t>();
+    if (isRefreshIntervalValid(newInterval)) {
+      Serial.printf("Refresh interval from API: %u seconds\n", newInterval);
+      saveRefreshIntervalToEEPROM(newInterval);
+      result.refreshIntervalSeconds = newInterval;
+    } else {
+      Serial.printf("Invalid refreshInterval from API: %u (range: %u-%u)\n",
+                    newInterval, REFRESH_INTERVAL_MIN_SECONDS, REFRESH_INTERVAL_MAX_SECONDS);
+    }
+  } else {
+    Serial.println("No refreshInterval in imageDiff response");
+  }
+
   Serial.printf("Current checksum: %s\n", result.currentChecksum.c_str());
   Serial.printf("Previous checksum: %s\n", result.previousChecksum.c_str());
 
@@ -206,6 +220,11 @@ void fetchAndDisplayImage(EPaper& epd, FirmwareState& state, bool isColdBoot) {
     } else {
       Serial.println("Checking for changes...");
       ImageDiffResult diff = fetchImageDiff();
+      if (diff.refreshIntervalSeconds > 0) {
+        state.refreshIntervalSeconds = diff.refreshIntervalSeconds;
+        saveRefreshIntervalToEEPROM(diff.refreshIntervalSeconds);
+        Serial.printf("Updated refresh interval to %u seconds\n", diff.refreshIntervalSeconds);
+      }
       if (!diff.currentChecksum.isEmpty() && diff.currentChecksum == state.storedChecksum) {
         Serial.println("No changes detected");
         return;
@@ -221,6 +240,11 @@ void fetchAndDisplayImage(EPaper& epd, FirmwareState& state, bool isColdBoot) {
       ImageDiffResult diff = fetchImageDiff();
       state.storedChecksum = diff.currentChecksum;
       state.previousChecksum = diff.previousChecksum;
+      if (diff.refreshIntervalSeconds > 0) {
+        state.refreshIntervalSeconds = diff.refreshIntervalSeconds;
+        saveRefreshIntervalToEEPROM(diff.refreshIntervalSeconds);
+        Serial.printf("Updated refresh interval to %u seconds\n", diff.refreshIntervalSeconds);
+      }
       saveChecksumToEEPROM(state.storedChecksum);
       saveWakeCounterToEEPROM(state.wakeCounter);
       state.hasValidImage = true;

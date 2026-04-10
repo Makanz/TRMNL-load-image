@@ -49,6 +49,7 @@ String loadChecksumFromEEPROM() {
 void loadPersistedState(FirmwareState& state) {
   state.storedChecksum = loadChecksumFromEEPROM();
   state.wakeCounter = loadWakeCounterFromEEPROM();
+  state.refreshIntervalSeconds = loadRefreshIntervalFromEEPROM();
 }
 
 void clearPersistedImageState(FirmwareState& state) {
@@ -58,4 +59,22 @@ void clearPersistedImageState(FirmwareState& state) {
 
   clearChecksumInEEPROM();
   saveWakeCounterToEEPROM(0);
+  saveRefreshIntervalToEEPROM(0);
+}
+
+void saveRefreshIntervalToEEPROM(uint32_t intervalSeconds) {
+  EEPROM.write(EEPROM_REFRESH_INTERVAL_OFFSET, (intervalSeconds >> 24) & 0xFF);
+  EEPROM.write(EEPROM_REFRESH_INTERVAL_OFFSET + 1, (intervalSeconds >> 16) & 0xFF);
+  EEPROM.write(EEPROM_REFRESH_INTERVAL_OFFSET + 2, (intervalSeconds >> 8) & 0xFF);
+  EEPROM.write(EEPROM_REFRESH_INTERVAL_OFFSET + 3, intervalSeconds & 0xFF);
+  EEPROM.commit();
+}
+
+uint32_t loadRefreshIntervalFromEEPROM() {
+  uint32_t interval = 0;
+  interval = ((uint32_t)EEPROM.read(EEPROM_REFRESH_INTERVAL_OFFSET) << 24) |
+             ((uint32_t)EEPROM.read(EEPROM_REFRESH_INTERVAL_OFFSET + 1) << 16) |
+             ((uint32_t)EEPROM.read(EEPROM_REFRESH_INTERVAL_OFFSET + 2) << 8) |
+             (uint32_t)EEPROM.read(EEPROM_REFRESH_INTERVAL_OFFSET + 3);
+  return interval;
 }

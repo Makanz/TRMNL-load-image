@@ -17,13 +17,22 @@ FirmwareState firmwareState;
 
 const int BUTTON_1 = D1;
 
-const uint64_t SLEEP_DURATION_US = (uint64_t)REFRESH_INTERVAL_MINUTES * 60ULL * 1000000ULL;
-
 void goToSleep() {
-  Serial.printf("Entering deep sleep for %d minutes...\n", REFRESH_INTERVAL_MINUTES);
+  uint32_t intervalSeconds = firmwareState.refreshIntervalSeconds;
+  if (intervalSeconds == 0 || !isRefreshIntervalValid(intervalSeconds)) {
+    intervalSeconds = getDefaultRefreshInterval();
+    Serial.printf("Using default refresh interval: %u seconds\n", intervalSeconds);
+  } else {
+    Serial.printf("Using refresh interval from EEPROM/API: %u seconds\n", intervalSeconds);
+  }
+
+  uint64_t sleepDurationUs = (uint64_t)intervalSeconds * 1000000ULL;
+  uint32_t minutes = intervalSeconds / 60;
+  Serial.printf("Entering deep sleep for %u seconds (%u minutes)...\n", intervalSeconds, minutes);
   Serial.flush();
-  // esp_sleep_enable_timer_wakeup(SLEEP_DURATION_US);
-  // esp_deep_sleep_start();
+
+  esp_sleep_enable_timer_wakeup(sleepDurationUs);
+  esp_deep_sleep_start();
 }
 
 void setup() {

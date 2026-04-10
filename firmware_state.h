@@ -5,6 +5,7 @@
 
 constexpr size_t EEPROM_CHECKSUM_MAX_LEN = 71;
 constexpr int EEPROM_WAKE_COUNTER_OFFSET = 76;
+constexpr int EEPROM_REFRESH_INTERVAL_OFFSET = 80;
 constexpr int MAX_IMAGE_CHANGES = 10;
 constexpr size_t EEPROM_SIZE = 128;
 
@@ -20,6 +21,7 @@ struct ImageDiffResult {
   int changeCount = 0;
   String currentChecksum = "";
   String previousChecksum = "";
+  uint32_t refreshIntervalSeconds = 0;
 };
 
 struct WiFiStatusSnapshot {
@@ -45,7 +47,19 @@ struct FirmwareState {
   String previousChecksum = "";
   bool hasValidImage = false;
   uint32_t wakeCounter = 0;
+  uint32_t refreshIntervalSeconds = 0;
   WiFiDisplayState wifiDisplay;
 };
+
+uint32_t getDefaultRefreshInterval();
+bool isRefreshIntervalValid(uint32_t intervalSeconds);
+
+inline uint32_t getDefaultRefreshInterval() {
+  return (uint32_t)REFRESH_INTERVAL_MINUTES * 60ULL;
+}
+
+inline bool isRefreshIntervalValid(uint32_t intervalSeconds) {
+  return intervalSeconds >= REFRESH_INTERVAL_MIN_SECONDS && intervalSeconds <= REFRESH_INTERVAL_MAX_SECONDS;
+}
 
 #endif
