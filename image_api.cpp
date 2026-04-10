@@ -15,8 +15,6 @@
 
 namespace {
 
-const uint32_t FULL_FETCH_WAKE_COUNT = FULL_FETCH_INTERVAL_HOURS * 60 / REFRESH_INTERVAL_MINUTES;
-
 String getBasicAuthHeader() {
   static String cached;
   if (cached.length() > 0) {
@@ -209,11 +207,17 @@ void fetchAndDisplayImage(EPaper& epd, FirmwareState& state, bool isColdBoot) {
     shouldFullFetch = true;
     state.wakeCounter = 0;
   } else {
+    uint32_t effectiveInterval = (state.refreshIntervalSeconds > 0)
+        ? state.refreshIntervalSeconds
+        : getDefaultRefreshInterval();
+    uint32_t fullFetchWakeCount = (FULL_FETCH_INTERVAL_HOURS * 3600U) / effectiveInterval;
+    if (fullFetchWakeCount == 0) fullFetchWakeCount = 1;
+
     state.wakeCounter++;
     saveWakeCounterToEEPROM(state.wakeCounter);
-    Serial.printf("Wake #%u, full fetch every %u\n", state.wakeCounter, FULL_FETCH_WAKE_COUNT);
+    Serial.printf("Wake #%u, full fetch every %u\n", state.wakeCounter, fullFetchWakeCount);
 
-    if (state.wakeCounter >= FULL_FETCH_WAKE_COUNT) {
+    if (state.wakeCounter >= fullFetchWakeCount) {
       Serial.println("Full fetch interval reached");
       shouldFullFetch = true;
       state.wakeCounter = 0;

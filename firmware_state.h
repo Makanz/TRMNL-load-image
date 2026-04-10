@@ -2,6 +2,7 @@
 #define FIRMWARE_STATE_H
 
 #include <Arduino.h>
+#include "config.h"
 
 constexpr size_t EEPROM_CHECKSUM_MAX_LEN = 71;
 constexpr int EEPROM_WAKE_COUNTER_OFFSET = 76;
