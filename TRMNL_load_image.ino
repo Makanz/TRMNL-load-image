@@ -46,10 +46,6 @@ void setup() {
   Serial.println(isTimerWake ? "Woke from deep sleep" : "TRMNL Startup");
   Serial.println("=====================");
 
-  epd.init();
-  epd.setRotation(0);
-  epd.setTextColor(TFT_BLACK);
-
   if (!EEPROM.begin(EEPROM_SIZE)) {
     Serial.println("EEPROM.begin failed!");
     drawErrorScreen(epd, "EEPROM error!");

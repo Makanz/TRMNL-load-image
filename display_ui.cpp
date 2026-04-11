@@ -19,6 +19,7 @@ constexpr int ROW_BSSID = 210;
 constexpr int ROW_CHANNEL = 246;
 constexpr int ROW_HEIGHT = 36;
 constexpr int FULL_REFRESH_EVERY = 20;
+bool displayInitialized = false;
 
 bool wifiStatusChanged(const FirmwareState& state, const WiFiStatusSnapshot& snapshot) {
   return (snapshot.status != state.wifiDisplay.prevWifiStatus) ||
@@ -48,7 +49,19 @@ void updateRow(EPaper& epd, FirmwareState& state, int y, const String& text, int
 
 }  // namespace
 
+void ensureDisplayReady(EPaper& epd) {
+  if (displayInitialized) {
+    return;
+  }
+
+  epd.init();
+  epd.setRotation(0);
+  epd.setTextColor(TFT_BLACK);
+  displayInitialized = true;
+}
+
 void drawInitialScreen(EPaper& epd) {
+  ensureDisplayReady(epd);
   epd.fillScreen(TFT_WHITE);
   epd.setTextColor(TFT_BLACK);
   epd.setTextSize(2);
@@ -57,6 +70,7 @@ void drawInitialScreen(EPaper& epd) {
 }
 
 void drawErrorScreen(EPaper& epd, const String& errorMsg) {
+  ensureDisplayReady(epd);
   epd.fillScreen(TFT_WHITE);
   epd.setTextColor(TFT_BLACK);
   epd.setTextSize(2);
@@ -66,6 +80,7 @@ void drawErrorScreen(EPaper& epd, const String& errorMsg) {
 }
 
 void drawWiFiStatusScreen(EPaper& epd, FirmwareState& state) {
+  ensureDisplayReady(epd);
   WiFiStatusSnapshot snapshot = readWiFiStatusSnapshot();
   if (!wifiStatusChanged(state, snapshot) && !state.wifiDisplay.isFirstDraw) {
     return;

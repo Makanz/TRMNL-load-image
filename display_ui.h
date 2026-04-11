@@ -7,6 +7,7 @@
 
 class EPaper;
 
+void ensureDisplayReady(EPaper& epd);
 void drawInitialScreen(EPaper& epd);
 void drawErrorScreen(EPaper& epd, const String& errorMsg);
 void drawWiFiStatusScreen(EPaper& epd, FirmwareState& state);

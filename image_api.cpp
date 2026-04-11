@@ -8,6 +8,7 @@
 
 #include "bmp_decode.h"
 #include "config.h"
+#include "display_ui.h"
 #include "driver.h"
 #include "secrets.h"
 #include "storage.h"
@@ -62,6 +63,47 @@ String fetchChecksum() {
   }
 
   return doc["checksum"] | "";
+}
+
+void applyRefreshInterval(FirmwareState& state, uint32_t refreshIntervalSeconds) {
+  if (refreshIntervalSeconds == 0) {
+    return;
+  }
+
+  state.refreshIntervalSeconds = refreshIntervalSeconds;
+  Serial.printf("Updated refresh interval to %u seconds\n", refreshIntervalSeconds);
+}
+
+void applyDiffMetadata(FirmwareState& state, const ImageDiffResult& diff) {
+  state.storedChecksum = diff.currentChecksum;
+  state.previousChecksum = diff.previousChecksum;
+  applyRefreshInterval(state, diff.refreshIntervalSeconds);
+}
+
+void finalizeSuccessfulFetchState(FirmwareState& state) {
+  state.elapsedFullFetchSeconds = 0;
+  state.wakeCounter = 0;
+  state.hasValidImage = true;
+  savePersistedState(state);
+  Serial.println("Full fetch completed - reset elapsed full-refresh timer");
+}
+
+bool syncMetadataAfterFullFetch(FirmwareState& state, const ImageDiffResult* prefetchedDiff) {
+  if (prefetchedDiff != nullptr && !prefetchedDiff->currentChecksum.isEmpty()) {
+    String checksum = fetchChecksum();
+    if (!checksum.isEmpty() && checksum == prefetchedDiff->currentChecksum) {
+      state.storedChecksum = checksum;
+      state.previousChecksum = prefetchedDiff->previousChecksum;
+      applyRefreshInterval(state, prefetchedDiff->refreshIntervalSeconds);
+      return true;
+    }
+
+    Serial.println("Post-fetch checksum changed, refreshing diff metadata");
+  }
+
+  ImageDiffResult diff = fetchImageDiff();
+  applyDiffMetadata(state, diff);
+  return true;
 }
 
 }  // namespace
@@ -125,7 +167,6 @@ ImageDiffResult fetchImageDiff() {
     uint32_t newInterval = root["refreshInterval"].as<uint32_t>();
     if (isRefreshIntervalValid(newInterval)) {
       Serial.printf("Refresh interval from API: %u seconds\n", newInterval);
-      saveRefreshIntervalToEEPROM(newInterval);
       result.refreshIntervalSeconds = newInterval;
     } else {
       Serial.printf("Invalid refreshInterval from API: %u (range: %u-%u)\n",
@@ -161,6 +202,7 @@ ImageDiffResult fetchImageDiff() {
 }
 
 bool fetchRawImageAndDisplay(EPaper& epd) {
+  ensureDisplayReady(epd);
   HTTPClient http;
   WiFiClientSecure client;
   client.setInsecure();
@@ -202,6 +244,9 @@ void fetchAndDisplayImage(EPaper& epd, FirmwareState& state, bool isColdBoot) {
 
   bool shouldFullFetch = false;
   bool intervalReached = false;
+  bool shouldPersistState = false;
+  ImageDiffResult prefetchedDiff;
+  bool hasPrefetchedDiff = false;
 
   if (isColdBoot) {
     Serial.println("Cold boot - fetching full image");
@@ -219,9 +264,7 @@ void fetchAndDisplayImage(EPaper& epd, FirmwareState& state, bool isColdBoot) {
       elapsedSinceLastFullFetch = fullFetchIntervalSeconds;
     }
     state.elapsedFullFetchSeconds = (uint32_t)elapsedSinceLastFullFetch;
-
-    saveWakeCounterToEEPROM(state.wakeCounter);
-    saveElapsedFullFetchSecondsToEEPROM(state.elapsedFullFetchSeconds);
+    shouldPersistState = true;
     Serial.printf("Wake #%u, slept %u sec, elapsed since last full fetch %u/%u sec\n",
                   state.wakeCounter,
                   sleptIntervalSeconds,
@@ -236,14 +279,18 @@ void fetchAndDisplayImage(EPaper& epd, FirmwareState& state, bool isColdBoot) {
       Serial.println("Checking for changes...");
       ImageDiffResult diff = fetchImageDiff();
       if (diff.refreshIntervalSeconds > 0) {
-        state.refreshIntervalSeconds = diff.refreshIntervalSeconds;
-        saveRefreshIntervalToEEPROM(diff.refreshIntervalSeconds);
-        Serial.printf("Updated refresh interval to %u seconds\n", diff.refreshIntervalSeconds);
+        applyRefreshInterval(state, diff.refreshIntervalSeconds);
+        shouldPersistState = true;
       }
       if (!diff.currentChecksum.isEmpty() && diff.currentChecksum == state.storedChecksum) {
         Serial.println("No changes detected");
+        if (shouldPersistState) {
+          savePersistedState(state);
+        }
         return;
       }
+      prefetchedDiff = diff;
+      hasPrefetchedDiff = !diff.currentChecksum.isEmpty();
       shouldFullFetch = true;
     }
   }
@@ -252,23 +299,14 @@ void fetchAndDisplayImage(EPaper& epd, FirmwareState& state, bool isColdBoot) {
     Serial.println("Fetching full image...");
     bool success = fetchRawImageAndDisplay(epd);
     if (success) {
-      ImageDiffResult diff = fetchImageDiff();
-      state.storedChecksum = diff.currentChecksum;
-      state.previousChecksum = diff.previousChecksum;
-      if (diff.refreshIntervalSeconds > 0) {
-        state.refreshIntervalSeconds = diff.refreshIntervalSeconds;
-        saveRefreshIntervalToEEPROM(diff.refreshIntervalSeconds);
-        Serial.printf("Updated refresh interval to %u seconds\n", diff.refreshIntervalSeconds);
-      }
-      state.elapsedFullFetchSeconds = 0;
-      state.wakeCounter = 0;
-      saveChecksumToEEPROM(state.storedChecksum);
-      saveElapsedFullFetchSecondsToEEPROM(state.elapsedFullFetchSeconds);
-      saveWakeCounterToEEPROM(state.wakeCounter);
-      state.hasValidImage = true;
-      Serial.println("Full fetch completed - reset elapsed full-refresh timer");
+      syncMetadataAfterFullFetch(state, hasPrefetchedDiff ? &prefetchedDiff : nullptr);
+      finalizeSuccessfulFetchState(state);
     } else if (intervalReached) {
       Serial.println("Full fetch failed - keeping elapsed timer so interval is retried next wake");
+    }
+
+    if (!success && shouldPersistState) {
+      savePersistedState(state);
     }
   }
 }

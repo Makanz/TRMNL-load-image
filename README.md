@@ -26,7 +26,7 @@ ESP32 firmware for TRMNL 7.5" monochrome ePaper display (UC8179, 800×480). The 
 
 ### Wake/sleep cycle
 
-`setup()` contains all runtime logic; `loop()` is never reached. The device either cold-boots or wakes via `ESP_SLEEP_WAKEUP_TIMER`. At the end of `setup()`, `goToSleep()` puts the ESP32 back into deep sleep for the configured interval.
+`setup()` contains all runtime logic; `loop()` is never reached. The device either cold-boots or wakes via `ESP_SLEEP_WAKEUP_TIMER`. The display is initialized lazily only when the firmware actually needs to draw something, so timer wakes that detect no content change can skip ePaper startup. At the end of `setup()`, `goToSleep()` puts the ESP32 back into deep sleep for the configured interval.
 
 ### Image update
 
@@ -42,6 +42,8 @@ ESP32 firmware for TRMNL 7.5" monochrome ePaper display (UC8179, 800×480). The 
 | 76 | 4 | `wakeCounter` (big-endian `uint32_t`) |
 | 80 | 4 | `refreshIntervalSeconds` (big-endian `uint32_t`) |
 | 84 | 4 | Elapsed seconds since last successful full refresh |
+
+EEPROM writes are batched so related state changes are committed together instead of issuing separate commits per field.
 
 ### Key files
 
