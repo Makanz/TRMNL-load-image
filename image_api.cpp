@@ -31,40 +31,6 @@ String getBasicAuthHeader() {
   return cached;
 }
 
-String fetchChecksum() {
-  HTTPClient http;
-  WiFiClientSecure client;
-  client.setInsecure();
-  http.begin(client, API_URL_META);
-  http.setTimeout(10000);
-  http.addHeader("Authorization", getBasicAuthHeader());
-  http.addHeader("Accept", "application/json");
-
-  Serial.println("Fetching checksum...");
-  Serial.printf("[Heap] Before checksum-fetch: %u bytes free\n", ESP.getFreeHeap());
-
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("Checksum HTTP error: %d\n", code);
-    http.end();
-    return "";
-  }
-
-  String payload = http.getString();
-  http.end();
-  Serial.printf("[Heap] After checksum-fetch: %u bytes free, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
-  Serial.printf("Checksum raw response: %s\n", payload.c_str());
-
-  StaticJsonDocument<256> doc;
-  DeserializationError err = deserializeJson(doc, payload);
-  if (err) {
-    Serial.printf("Checksum JSON error: %s\n", err.c_str());
-    return "";
-  }
-
-  return doc["checksum"] | "";
-}
-
 void applyRefreshInterval(FirmwareState& state, uint32_t refreshIntervalSeconds) {
   if (refreshIntervalSeconds == 0) {
     return;
@@ -75,8 +41,10 @@ void applyRefreshInterval(FirmwareState& state, uint32_t refreshIntervalSeconds)
 }
 
 void applyDiffMetadata(FirmwareState& state, const ImageDiffResult& diff) {
-  state.storedChecksum = diff.currentChecksum;
-  state.previousChecksum = diff.previousChecksum;
+  if (!diff.currentChecksum.isEmpty()) {
+    state.storedChecksum = diff.currentChecksum;
+    state.previousChecksum = diff.previousChecksum;
+  }
   applyRefreshInterval(state, diff.refreshIntervalSeconds);
 }
 
@@ -90,20 +58,15 @@ void finalizeSuccessfulFetchState(FirmwareState& state) {
 
 bool syncMetadataAfterFullFetch(FirmwareState& state, const ImageDiffResult* prefetchedDiff) {
   if (prefetchedDiff != nullptr && !prefetchedDiff->currentChecksum.isEmpty()) {
-    String checksum = fetchChecksum();
-    if (!checksum.isEmpty() && checksum == prefetchedDiff->currentChecksum) {
-      state.storedChecksum = checksum;
-      state.previousChecksum = prefetchedDiff->previousChecksum;
-      applyRefreshInterval(state, prefetchedDiff->refreshIntervalSeconds);
-      return true;
-    }
-
-    Serial.println("Post-fetch checksum changed, refreshing diff metadata");
+    applyDiffMetadata(state, *prefetchedDiff);
+    return true;
   }
-
   ImageDiffResult diff = fetchImageDiff();
+  if (diff.currentChecksum.isEmpty()) {
+    Serial.println("Post-fetch diff missing checksum, keeping existing checksum");
+  }
   applyDiffMetadata(state, diff);
-  return true;
+  return !diff.currentChecksum.isEmpty();
 }
 
 }  // namespace

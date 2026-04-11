@@ -133,3 +133,4 @@ void drawWiFiStatusScreen(EPaper& epd, FirmwareState& state) {
   state.wifiDisplay.prevChannel = snapshot.channel;
   state.wifiDisplay.prevBSSID = snapshot.bssid;
 }
+                        
