@@ -7,6 +7,7 @@
 constexpr size_t EEPROM_CHECKSUM_MAX_LEN = 71;
 constexpr int EEPROM_WAKE_COUNTER_OFFSET = 76;
 constexpr int EEPROM_REFRESH_INTERVAL_OFFSET = 80;
+constexpr int EEPROM_FULL_FETCH_ELAPSED_OFFSET = 84;
 constexpr int MAX_IMAGE_CHANGES = 10;
 constexpr size_t EEPROM_SIZE = 128;
 
@@ -49,14 +50,20 @@ struct FirmwareState {
   bool hasValidImage = false;
   uint32_t wakeCounter = 0;
   uint32_t refreshIntervalSeconds = 0;
+  uint32_t elapsedFullFetchSeconds = 0;
   WiFiDisplayState wifiDisplay;
 };
 
 uint32_t getDefaultRefreshInterval();
+uint32_t getFullFetchIntervalSeconds();
 bool isRefreshIntervalValid(uint32_t intervalSeconds);
 
 inline uint32_t getDefaultRefreshInterval() {
   return (uint32_t)REFRESH_INTERVAL_MINUTES * 60ULL;
+}
+
+inline uint32_t getFullFetchIntervalSeconds() {
+  return (uint32_t)FULL_FETCH_INTERVAL_HOURS * 3600ULL;
 }
 
 inline bool isRefreshIntervalValid(uint32_t intervalSeconds) {

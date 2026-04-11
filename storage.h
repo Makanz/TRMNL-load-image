@@ -14,5 +14,7 @@ void loadPersistedState(FirmwareState& state);
 void clearPersistedImageState(FirmwareState& state);
 void saveRefreshIntervalToEEPROM(uint32_t intervalSeconds);
 uint32_t loadRefreshIntervalFromEEPROM();
+void saveElapsedFullFetchSecondsToEEPROM(uint32_t elapsedSeconds);
+uint32_t loadElapsedFullFetchSecondsFromEEPROM();
 
 #endif

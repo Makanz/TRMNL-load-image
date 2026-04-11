@@ -50,16 +50,30 @@ void loadPersistedState(FirmwareState& state) {
   state.storedChecksum = loadChecksumFromEEPROM();
   state.wakeCounter = loadWakeCounterFromEEPROM();
   state.refreshIntervalSeconds = loadRefreshIntervalFromEEPROM();
+  state.elapsedFullFetchSeconds = loadElapsedFullFetchSecondsFromEEPROM();
+
+  if (!isRefreshIntervalValid(state.refreshIntervalSeconds)) {
+    state.refreshIntervalSeconds = 0;
+    saveRefreshIntervalToEEPROM(0);
+  }
+
+  if (state.elapsedFullFetchSeconds > getFullFetchIntervalSeconds()) {
+    state.elapsedFullFetchSeconds = 0;
+    saveElapsedFullFetchSecondsToEEPROM(0);
+  }
 }
 
 void clearPersistedImageState(FirmwareState& state) {
   state.storedChecksum = "";
   state.previousChecksum = "";
   state.wakeCounter = 0;
+  state.refreshIntervalSeconds = 0;
+  state.elapsedFullFetchSeconds = 0;
 
   clearChecksumInEEPROM();
   saveWakeCounterToEEPROM(0);
   saveRefreshIntervalToEEPROM(0);
+  saveElapsedFullFetchSecondsToEEPROM(0);
 }
 
 void saveRefreshIntervalToEEPROM(uint32_t intervalSeconds) {
@@ -77,4 +91,21 @@ uint32_t loadRefreshIntervalFromEEPROM() {
              ((uint32_t)EEPROM.read(EEPROM_REFRESH_INTERVAL_OFFSET + 2) << 8) |
              (uint32_t)EEPROM.read(EEPROM_REFRESH_INTERVAL_OFFSET + 3);
   return interval;
+}
+
+void saveElapsedFullFetchSecondsToEEPROM(uint32_t elapsedSeconds) {
+  EEPROM.write(EEPROM_FULL_FETCH_ELAPSED_OFFSET, (elapsedSeconds >> 24) & 0xFF);
+  EEPROM.write(EEPROM_FULL_FETCH_ELAPSED_OFFSET + 1, (elapsedSeconds >> 16) & 0xFF);
+  EEPROM.write(EEPROM_FULL_FETCH_ELAPSED_OFFSET + 2, (elapsedSeconds >> 8) & 0xFF);
+  EEPROM.write(EEPROM_FULL_FETCH_ELAPSED_OFFSET + 3, elapsedSeconds & 0xFF);
+  EEPROM.commit();
+}
+
+uint32_t loadElapsedFullFetchSecondsFromEEPROM() {
+  uint32_t elapsedSeconds = 0;
+  elapsedSeconds = ((uint32_t)EEPROM.read(EEPROM_FULL_FETCH_ELAPSED_OFFSET) << 24) |
+                   ((uint32_t)EEPROM.read(EEPROM_FULL_FETCH_ELAPSED_OFFSET + 1) << 16) |
+                   ((uint32_t)EEPROM.read(EEPROM_FULL_FETCH_ELAPSED_OFFSET + 2) << 8) |
+                   (uint32_t)EEPROM.read(EEPROM_FULL_FETCH_ELAPSED_OFFSET + 3);
+  return elapsedSeconds;
 }

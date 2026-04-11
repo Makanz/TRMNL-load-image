@@ -30,8 +30,9 @@ ESP32 firmware for TRMNL 7.5" monochrome ePaper display (UC8179, 800×480). The 
 
 ### Image update
 
-- **Cold boot** or every `FULL_FETCH_INTERVAL_HOURS`: full image download via `?type=image` (BMP format), decoded and rendered via `BMPDecodeStream`. After rendering, `?type=imageDiff` is called to capture the current checksum.
-- **Timer wakes**: all timer wakes currently trigger a full image fetch. Partial region fetching via `?type=imageRegion` was explored but is not active.
+- **Cold boot**: full image download via `?type=image` (BMP format), decoded and rendered via `BMPDecodeStream`. After rendering, `?type=imageDiff` is called to capture the current checksum.
+- **Timer wakes**: the firmware accumulates slept seconds and forces a full image fetch once `FULL_FETCH_INTERVAL_HOURS` has elapsed since the last successful full refresh.
+- **Between forced full refreshes**: timer wakes call `?type=imageDiff`; if the checksum changed, the device performs a full BMP fetch immediately and resets the 4-hour full-refresh timer.
 
 ### EEPROM layout (128 bytes total)
 
@@ -40,6 +41,7 @@ ESP32 firmware for TRMNL 7.5" monochrome ePaper display (UC8179, 800×480). The 
 | 0 | 71 | Null-terminated checksum string |
 | 76 | 4 | `wakeCounter` (big-endian `uint32_t`) |
 | 80 | 4 | `refreshIntervalSeconds` (big-endian `uint32_t`) |
+| 84 | 4 | Elapsed seconds since last successful full refresh |
 
 ### Key files
 
@@ -61,7 +63,7 @@ Edit `config.h`:
 |---|---|---|
 | `API_URL` | (webhook URL) | Base webhook URL |
 | `REFRESH_INTERVAL_MINUTES` | 1 | Deep sleep duration between wakes |
-| `FULL_FETCH_INTERVAL_HOURS` | 4 | How often to force a full image download |
+| `FULL_FETCH_INTERVAL_HOURS` | 4 | Exact max time between successful full image downloads |
 | `REFRESH_INTERVAL_MIN_SECONDS` | 60 | Minimum API-provided refresh override |
 | `REFRESH_INTERVAL_MAX_SECONDS` | 14400 | Maximum API-provided refresh override (4 hours) |
 

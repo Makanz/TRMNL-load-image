@@ -201,26 +201,37 @@ void fetchAndDisplayImage(EPaper& epd, FirmwareState& state, bool isColdBoot) {
   }
 
   bool shouldFullFetch = false;
+  bool intervalReached = false;
 
   if (isColdBoot) {
     Serial.println("Cold boot - fetching full image");
     shouldFullFetch = true;
-    state.wakeCounter = 0;
   } else {
-    uint32_t effectiveInterval = (state.refreshIntervalSeconds > 0)
+    uint32_t sleptIntervalSeconds = (state.refreshIntervalSeconds > 0)
         ? state.refreshIntervalSeconds
         : getDefaultRefreshInterval();
-    uint32_t fullFetchWakeCount = (FULL_FETCH_INTERVAL_HOURS * 3600U) / effectiveInterval;
-    if (fullFetchWakeCount == 0) fullFetchWakeCount = 1;
+    uint32_t fullFetchIntervalSeconds = getFullFetchIntervalSeconds();
 
     state.wakeCounter++;
-    saveWakeCounterToEEPROM(state.wakeCounter);
-    Serial.printf("Wake #%u, full fetch every %u\n", state.wakeCounter, fullFetchWakeCount);
+    uint64_t elapsedSinceLastFullFetch =
+        (uint64_t)state.elapsedFullFetchSeconds + (uint64_t)sleptIntervalSeconds;
+    if (elapsedSinceLastFullFetch > fullFetchIntervalSeconds) {
+      elapsedSinceLastFullFetch = fullFetchIntervalSeconds;
+    }
+    state.elapsedFullFetchSeconds = (uint32_t)elapsedSinceLastFullFetch;
 
-    if (state.wakeCounter >= fullFetchWakeCount) {
+    saveWakeCounterToEEPROM(state.wakeCounter);
+    saveElapsedFullFetchSecondsToEEPROM(state.elapsedFullFetchSeconds);
+    Serial.printf("Wake #%u, slept %u sec, elapsed since last full fetch %u/%u sec\n",
+                  state.wakeCounter,
+                  sleptIntervalSeconds,
+                  state.elapsedFullFetchSeconds,
+                  fullFetchIntervalSeconds);
+
+    if (state.elapsedFullFetchSeconds >= fullFetchIntervalSeconds) {
       Serial.println("Full fetch interval reached");
       shouldFullFetch = true;
-      state.wakeCounter = 0;
+      intervalReached = true;
     } else {
       Serial.println("Checking for changes...");
       ImageDiffResult diff = fetchImageDiff();
@@ -249,9 +260,15 @@ void fetchAndDisplayImage(EPaper& epd, FirmwareState& state, bool isColdBoot) {
         saveRefreshIntervalToEEPROM(diff.refreshIntervalSeconds);
         Serial.printf("Updated refresh interval to %u seconds\n", diff.refreshIntervalSeconds);
       }
+      state.elapsedFullFetchSeconds = 0;
+      state.wakeCounter = 0;
       saveChecksumToEEPROM(state.storedChecksum);
+      saveElapsedFullFetchSecondsToEEPROM(state.elapsedFullFetchSeconds);
       saveWakeCounterToEEPROM(state.wakeCounter);
       state.hasValidImage = true;
+      Serial.println("Full fetch completed - reset elapsed full-refresh timer");
+    } else if (intervalReached) {
+      Serial.println("Full fetch failed - keeping elapsed timer so interval is retried next wake");
     }
   }
 }

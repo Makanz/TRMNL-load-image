@@ -35,13 +35,15 @@ Arduino/ESP32 firmware for a TRMNL ePaper display device. The device periodicall
 ### Image update strategy
 Two modes are used to minimize ePaper wear and data transfer:
 
-1. **Full update** (cold boot, or every `FULL_FETCH_INTERVAL_HOURS`): Downloads the full image via `?type=image` (BMP format), decoded and rendered via `BMPDecodeStream`. After rendering, calls `?type=imageDiff` to capture the current checksum.
-2. **Full update** (other timer wakes): Currently all timer wakes trigger a full image fetch. The `?type=imageRegion` endpoint and partial region logic was explored but is not active in the current codebase.
+1. **Full update** (cold boot): Downloads the full image via `?type=image` (BMP format), decoded and rendered via `BMPDecodeStream`. After rendering, calls `?type=imageDiff` to capture the current checksum.
+2. **Timed full update** (timer wakes): The firmware accumulates slept seconds and forces a full image fetch once `FULL_FETCH_INTERVAL_HOURS` has elapsed since the last successful full refresh.
+3. **Change-driven update** (between timed full updates): Timer wakes call `?type=imageDiff`; if the checksum changed, the device performs a full BMP fetch immediately and resets the timed full-refresh interval.
 
 ### EEPROM layout (128 bytes total)
 - Bytes 0–70: null-terminated checksum string (`EEPROM_CHECKSUM_MAX_LEN = 71`)
 - Bytes 76–79: `wakeCounter` as big-endian `uint32_t` (`EEPROM_WAKE_COUNTER_OFFSET = 76`)
 - Bytes 80–83: `refreshIntervalSeconds` as big-endian `uint32_t` (`EEPROM_REFRESH_INTERVAL_OFFSET = 80`)
+- Bytes 84–87: elapsed seconds since the last successful full refresh (`EEPROM_FULL_FETCH_ELAPSED_OFFSET = 84`)
 
 ### BMP rendering
 `BMPDecodeStream` is a `Stream` subclass used with `http.writeToStream()` for the full image fetch. It parses BMP headers from the stream, converts RGB pixels to monochrome using luminance weighting (`lum = r*77 + g*150 + b*29 >> 8`) with threshold 128, and renders directly to the ePaper display. This correctly handles `Transfer-Encoding: chunked` — do **not** use `http.getStreamPtr()` for this, as it returns raw TCP data including chunk-size headers.
