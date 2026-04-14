@@ -28,9 +28,7 @@ void connectWiFi() {
   Serial.println("Connecting to WiFi...");
 
   const int MAX_RETRIES = 5;
-  const int POLL_INTERVAL_MS = 500;
   const int POLLS_PER_ATTEMPT = 20;
-  const int RETRY_DELAY_MS = 3000;
 
   WiFi.mode(WIFI_STA);
 
@@ -38,14 +36,14 @@ void connectWiFi() {
     Serial.printf("Attempt %d/%d\n", attempt, MAX_RETRIES);
 
     WiFi.disconnect(true);
-    delay(500);
+    delay(WIFI_DISCONNECT_DELAY_MS);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
     for (int poll = 0; poll < POLLS_PER_ATTEMPT; poll++) {
       if (WiFi.status() == WL_CONNECTED) {
         break;
       }
-      delay(POLL_INTERVAL_MS);
+      delay(WIFI_POLL_INTERVAL_MS);
       Serial.print(".");
     }
     Serial.println();
@@ -60,8 +58,8 @@ void connectWiFi() {
 
     Serial.printf("Attempt %d failed (status %d)", attempt, WiFi.status());
     if (attempt < MAX_RETRIES) {
-      Serial.printf(", retrying in %d s...\n", RETRY_DELAY_MS / 1000);
-      delay(RETRY_DELAY_MS);
+      Serial.printf(", retrying in %d s...\n", WIFI_RETRY_DELAY_MS / 1000);
+      delay(WIFI_RETRY_DELAY_MS);
     } else {
       Serial.println();
     }

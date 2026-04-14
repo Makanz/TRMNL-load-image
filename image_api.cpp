@@ -35,7 +35,7 @@ String fetchChecksum() {
   WiFiClientSecure client;
   client.setInsecure();
   http.begin(client, API_URL_META);
-  http.setTimeout(10000);
+  http.setTimeout(HTTP_TIMEOUT_META_MS);
   http.addHeader("Authorization", getBasicAuthHeader());
   http.addHeader("Accept", "application/json");
 
@@ -76,7 +76,7 @@ ImageDiffResult fetchImageDiff() {
   String url = String(API_URL_DIFF);
   Serial.printf("Fetching image diff from: %s\n", url.c_str());
   http.begin(client, url);
-  http.setTimeout(10000);
+  http.setTimeout(HTTP_TIMEOUT_META_MS);
   http.addHeader("Authorization", getBasicAuthHeader());
   http.addHeader("Accept", "application/json");
 
@@ -165,7 +165,7 @@ bool fetchRawImageAndDisplay(EPaper& epd) {
   WiFiClientSecure client;
   client.setInsecure();
   http.begin(client, API_URL_IMAGE);
-  http.setTimeout(15000);
+  http.setTimeout(HTTP_TIMEOUT_IMAGE_MS);
   http.addHeader("Authorization", getBasicAuthHeader());
 
   Serial.println("Fetching raw image...");
