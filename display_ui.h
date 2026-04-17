@@ -10,5 +10,7 @@ class EPaper;
 void drawInitialScreen(EPaper& epd);
 void drawErrorScreen(EPaper& epd, const String& errorMsg);
 void drawWiFiStatusScreen(EPaper& epd, FirmwareState& state);
+String getErrorCodeString(ErrorCode errorCode);
+void drawErrorCode(EPaper& epd, ErrorCode errorCode);
 
 #endif

@@ -48,6 +48,36 @@ void updateRow(EPaper& epd, FirmwareState& state, int y, const String& text, int
 
 }  // namespace
 
+String getErrorCodeString(ErrorCode errorCode) {
+  switch (errorCode) {
+    case ErrorCode::NONE: return "OK";
+    case ErrorCode::WIFI_CONNECT_FAILED: return "ERR1";
+    case ErrorCode::WIFI_TIMEOUT: return "ERR2";
+    case ErrorCode::HTTP_TIMEOUT: return "ERR3";
+    case ErrorCode::HTTP_ERROR: return "ERR4";
+    case ErrorCode::INVALID_CHECKSUM: return "ERR5";
+    case ErrorCode::INVALID_BMP: return "ERR6";
+    case ErrorCode::BMP_RENDER_FAILED: return "ERR7";
+    case ErrorCode::EEPROM_CORRUPT: return "ERR8";
+    case ErrorCode::API_JSON_ERROR: return "ERR9";
+    case ErrorCode::API_UNEXPECTED_RESPONSE: return "ERRA";
+    case ErrorCode::UNKNOWN: return "ERRX";
+    default: return "ERR?";
+  }
+}
+
+void drawErrorCode(EPaper& epd, ErrorCode errorCode) {
+  if (errorCode == ErrorCode::NONE) {
+    return;
+  }
+  
+  String errStr = getErrorCodeString(errorCode);
+  epd.setTextColor(TFT_BLACK);
+  epd.setTextSize(2);
+  epd.drawString(errStr, SCREEN_WIDTH - 60, 10);
+  epd.updataPartial(SCREEN_WIDTH - 60, 10, 60, 30);
+}
+
 void drawInitialScreen(EPaper& epd) {
   epd.fillScreen(TFT_WHITE);
   epd.setTextColor(TFT_BLACK);

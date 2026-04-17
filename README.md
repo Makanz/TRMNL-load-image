@@ -42,6 +42,9 @@ ESP32 firmware for TRMNL 7.5" monochrome ePaper display (UC8179, 800×480). The 
 | 76 | 4 | `wakeCounter` (big-endian `uint32_t`) |
 | 80 | 4 | `refreshIntervalSeconds` (big-endian `uint32_t`) |
 | 84 | 4 | Elapsed seconds since last successful full refresh |
+| 88 | 2 | Last error code (big-endian `uint16_t`) |
+| 90 | 4 | Last error timestamp (big-endian `uint32_t`) |
+| 94 | 2 | Error occurrence count (big-endian `uint16_t`) |
 
 ### Key files
 
@@ -78,9 +81,69 @@ The firmware calls four webhook endpoints (all require Basic Auth):
 | `?type=imageDiff` | Returns changed regions and current/previous checksums |
 | `?type=imageRegion` | Reserved for partial region fetching (not currently used) |
 
+## Error Handling & Recovery
+
+The firmware implements comprehensive error handling with automatic retries and graceful degradation:
+
+### Image Fetch Retries
+
+When a full image fetch fails, the device automatically retries up to 3 times with exponential backoff:
+- **Attempt 1**: Immediate
+- **Attempt 2**: After 1 second delay
+- **Attempt 3**: After 2 second delay
+
+If all retries fail, the error is logged to EEPROM and displayed on the ePaper screen as a 4-character error code.
+
+### Error Codes
+
+Error codes are displayed in the top-right corner of the ePaper screen during failures:
+
+| Code | Error | Recovery |
+|------|-------|----------|
+| E001 | WiFi connection failed | Check SSID/password in `secrets.h`; retries on next wake |
+| E002 | WiFi timeout | WiFi issue; device sleeps and retries |
+| E003 | HTTP request timeout | Network connectivity issue; retries automatically |
+| E004 | HTTP error (non-200) | API server issue or authentication failure |
+| E005 | Invalid checksum format | Checksum corruption detected; cleared and fetches fresh |
+| E006 | Invalid BMP header | Corrupted image data; retries automatically |
+| E007 | BMP rendering failed | Display issue; retries on next wake |
+| E008 | EEPROM corruption | EEPROM values out of range; cleared automatically |
+| E009 | JSON parsing error | API response format issue; retries automatically |
+| ERRA | Unexpected API response | API response missing required fields; retries |
+| ERRX | Unknown error | Unclassified failure; retries on next wake |
+
+### Sleep Interval Behavior
+
+- **Success**: Device sleeps for configured `REFRESH_INTERVAL_MINUTES` (default 1 minute)
+- **Error**: Device sleeps but error is logged to EEPROM for diagnostics
+- **Extended failure**: API-provided `refreshInterval` is respected when present
+
+### State Validation
+
+On boot, the firmware validates all persisted state:
+- **Checksums**: Invalid characters detected → cleared automatically
+- **Refresh intervals**: Out of bounds → reset to default
+- **Elapsed timers**: Exceeds maximum → reset to 0
+
+### Serial Diagnostics
+
+The firmware prints comprehensive diagnostics to the serial port (115200 baud):
+- Boot information: Wake count, stored checksum, last error
+- WiFi connection progress and attempt details
+- Image fetch attempts and retry counts
+- Error codes with timestamps
+- Heap usage before/after WiFi and image fetch
+- Final shutdown status
+
+Enable serial monitoring in the Arduino IDE to debug issues.
+
 ## Troubleshooting
 
-- **WiFi fails**: Check `secrets.h` credentials; ensure AP is in range
+- **WiFi fails (E001)**: Check `secrets.h` SSID/password; ensure AP is in range; check serial output for WiFi status details
 - **Display shows "EEPROM error!"**: EEPROM initialization failed — board may need a power cycle
-- **No image on screen after WiFi connects**: Check webhook URL in `config.h`; verify API server is reachable
-- **Button 1**: Press during boot to clear EEPROM state and force a full refresh on next wake
+- **Error code on screen (E002-ERRX)**: Check serial monitor at 115200 baud for detailed error logs; errors are retried automatically on next wake
+- **No image on screen after WiFi connects**: Check webhook URL in `config.h`; verify API server is reachable; check serial output for HTTP errors
+- **Button 1 during boot**: Press to clear EEPROM state (wake counter, checksum, errors) and force a full refresh on next cycle
+- **Frequent E006 errors**: BMP image format issue; verify API server returns valid 8-bit monochrome BMP
+- **Frequent E009 errors**: JSON parsing issue; verify API response structure matches expected format
+- **Serial output shows errors but no display message**: Device is retrying; give it time to complete retries before next wake

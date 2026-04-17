@@ -3,7 +3,9 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
+#include "firmware_state.h"
 #include "secrets.h"
+#include "storage.h"
 
 String rssiQuality(int rssi) {
   if (rssi >= -50) return "Excellent";
@@ -56,12 +58,14 @@ void connectWiFi() {
       return;
     }
 
-    Serial.printf("Attempt %d failed (status %d)", attempt, WiFi.status());
+    wl_status_t status = WiFi.status();
+    Serial.printf("Attempt %d failed (status %d)", attempt, status);
     if (attempt < MAX_RETRIES) {
       Serial.printf(", retrying in %d s...\n", WIFI_RETRY_DELAY_MS / 1000);
       delay(WIFI_RETRY_DELAY_MS);
     } else {
       Serial.println();
+      saveErrorToEEPROM(ErrorCode::WIFI_CONNECT_FAILED, millis() / 1000);
     }
   }
 

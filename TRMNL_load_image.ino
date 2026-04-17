@@ -57,6 +57,13 @@ void setup() {
   }
   loadPersistedState(firmwareState);
 
+  Serial.printf("[Boot] Wake count: %u, Checksum: %s\n", firmwareState.wakeCounter, firmwareState.storedChecksum.c_str());
+  if (firmwareState.lastErrorCode != ErrorCode::NONE) {
+    Serial.printf("[Boot] Last error: %u (timestamp: %u)\n", 
+                  static_cast<uint16_t>(firmwareState.lastErrorCode),
+                  firmwareState.lastErrorTimestamp);
+  }
+
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
 
@@ -81,10 +88,21 @@ void setup() {
   Serial.printf("[Heap] After WiFi: %u bytes free\n", ESP.getFreeHeap());
 
   if (WiFi.status() == WL_CONNECTED) {
-    fetchAndDisplayImage(epd, firmwareState, !isTimerWake);
+    ImageFetchResult result = fetchImageWithRetry(epd, firmwareState, !isTimerWake);
+    if (!result.success) {
+      Serial.printf("Image fetch failed. Error code: %u\n", static_cast<uint16_t>(result.errorCode));
+      drawErrorCode(epd, result.errorCode);
+      delay(2000);
+    } else {
+      Serial.println("Image fetch succeeded");
+    }
   } else {
     Serial.println("WiFi failed, sleeping anyway.");
+    drawErrorCode(epd, ErrorCode::WIFI_CONNECT_FAILED);
+    delay(2000);
   }
+
+  Serial.printf("[Shutdown] Free heap: %u bytes\n", ESP.getFreeHeap());
 
   goToSleep();
 }

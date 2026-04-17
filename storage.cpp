@@ -21,7 +21,40 @@ T eepromRead32(int offset) {
   return static_cast<T>(v);
 }
 
+template<typename T>
+void eepromWrite16(int offset, T value) {
+  uint16_t v = static_cast<uint16_t>(value);
+  for (int i = 0; i < 2; i++) {
+    EEPROM.write(offset + i, (v >> (8 - i * 8)) & 0xFF);
+  }
+}
+
+template<typename T>
+T eepromRead16(int offset) {
+  uint16_t v = 0;
+  for (int i = 0; i < 2; i++) {
+    v = (v << 8) | EEPROM.read(offset + i);
+  }
+  return static_cast<T>(v);
+}
+
 }  // namespace
+
+bool isChecksumValid(const String& checksum) {
+  if (checksum.isEmpty()) {
+    return true;
+  }
+  if (checksum.length() > EEPROM_CHECKSUM_MAX_LEN) {
+    return false;
+  }
+  for (int i = 0; i < checksum.length(); i++) {
+    char c = checksum[i];
+    if (c < 32 || c > 126) {
+      return false;
+    }
+  }
+  return true;
+}
 
 void clearChecksumInEEPROM() {
   EEPROM.write(0, '\0');
@@ -62,6 +95,14 @@ void loadPersistedState(FirmwareState& state) {
   state.wakeCounter = loadWakeCounterFromEEPROM();
   state.refreshIntervalSeconds = loadRefreshIntervalFromEEPROM();
   state.elapsedFullFetchSeconds = loadElapsedFullFetchSecondsFromEEPROM();
+  loadErrorFromEEPROM(state.lastErrorCode, state.lastErrorTimestamp);
+  state.errorOccurrenceCount = loadErrorCountFromEEPROM();
+
+  if (!isChecksumValid(state.storedChecksum)) {
+    Serial.println("Stored checksum is corrupted, clearing");
+    state.storedChecksum = "";
+    clearChecksumInEEPROM();
+  }
 
   if (!isRefreshIntervalValid(state.refreshIntervalSeconds)) {
     state.refreshIntervalSeconds = 0;
@@ -80,11 +121,15 @@ void clearPersistedImageState(FirmwareState& state) {
   state.wakeCounter = 0;
   state.refreshIntervalSeconds = 0;
   state.elapsedFullFetchSeconds = 0;
+  state.lastErrorCode = ErrorCode::NONE;
+  state.lastErrorTimestamp = 0;
+  state.errorOccurrenceCount = 0;
 
   clearChecksumInEEPROM();
   saveWakeCounterToEEPROM(0);
   saveRefreshIntervalToEEPROM(0);
   saveElapsedFullFetchSecondsToEEPROM(0);
+  saveErrorToEEPROM(ErrorCode::NONE, 0);
 }
 
 void saveRefreshIntervalToEEPROM(uint32_t intervalSeconds) {
@@ -103,4 +148,27 @@ void saveElapsedFullFetchSecondsToEEPROM(uint32_t elapsedSeconds) {
 
 uint32_t loadElapsedFullFetchSecondsFromEEPROM() {
   return eepromRead32<uint32_t>(EEPROM_FULL_FETCH_ELAPSED_OFFSET);
+}
+
+void saveErrorToEEPROM(ErrorCode errorCode, uint32_t timestamp) {
+  eepromWrite16(EEPROM_LAST_ERROR_CODE_OFFSET, static_cast<uint16_t>(errorCode));
+  eepromWrite32(EEPROM_LAST_ERROR_TIMESTAMP_OFFSET, timestamp);
+  incrementErrorCountInEEPROM();
+  EEPROM.commit();
+}
+
+void loadErrorFromEEPROM(ErrorCode& errorCode, uint32_t& timestamp) {
+  uint16_t code = eepromRead16<uint16_t>(EEPROM_LAST_ERROR_CODE_OFFSET);
+  errorCode = static_cast<ErrorCode>(code);
+  timestamp = eepromRead32<uint32_t>(EEPROM_LAST_ERROR_TIMESTAMP_OFFSET);
+}
+
+void incrementErrorCountInEEPROM() {
+  uint16_t count = eepromRead16<uint16_t>(EEPROM_ERROR_COUNT_OFFSET);
+  count++;
+  eepromWrite16(EEPROM_ERROR_COUNT_OFFSET, count);
+}
+
+uint16_t loadErrorCountFromEEPROM() {
+  return eepromRead16<uint16_t>(EEPROM_ERROR_COUNT_OFFSET);
 }

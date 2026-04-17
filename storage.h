@@ -16,5 +16,10 @@ void saveRefreshIntervalToEEPROM(uint32_t intervalSeconds);
 uint32_t loadRefreshIntervalFromEEPROM();
 void saveElapsedFullFetchSecondsToEEPROM(uint32_t elapsedSeconds);
 uint32_t loadElapsedFullFetchSecondsFromEEPROM();
+void saveErrorToEEPROM(ErrorCode errorCode, uint32_t timestamp);
+void loadErrorFromEEPROM(ErrorCode& errorCode, uint32_t& timestamp);
+void incrementErrorCountInEEPROM();
+uint16_t loadErrorCountFromEEPROM();
+bool isChecksumValid(const String& checksum);
 
 #endif

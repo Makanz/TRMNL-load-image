@@ -51,6 +51,12 @@ String fetchChecksum() {
 
   String payload = http.getString();
   http.end();
+  
+  if (payload.isEmpty()) {
+    Serial.println("Checksum response is empty");
+    return "";
+  }
+  
   Serial.printf("[Heap] After checksum-fetch: %u bytes free, payload: %d bytes\n", ESP.getFreeHeap(), payload.length());
   Serial.printf("Checksum raw response: %s\n", payload.c_str());
 
@@ -61,7 +67,11 @@ String fetchChecksum() {
     return "";
   }
 
-  return doc["checksum"] | "";
+  String checksum = doc["checksum"] | "";
+  if (checksum.isEmpty()) {
+    Serial.println("No checksum value in response");
+  }
+  return checksum;
 }
 
 }  // namespace
@@ -178,20 +188,174 @@ bool fetchRawImageAndDisplay(EPaper& epd) {
     return false;
   }
 
+  int contentLength = http.getSize();
+  if (contentLength <= 0) {
+    Serial.println("Image response has no or invalid content length");
+    http.end();
+    return false;
+  }
+  Serial.printf("Image content length: %d bytes\n", contentLength);
+
   BMPDecodeStream decoder(epd);
   http.writeToStream(&decoder);
   http.end();
 
   if (!decoder.valid()) {
-    Serial.println("BMP decode failed");
+    Serial.println("BMP decode failed - invalid header or dimensions");
     return false;
   }
 
-  Serial.printf("Drew %d rows\n", decoder.rowsDone());
+  int rowsDone = decoder.rowsDone();
+  Serial.printf("Drew %d rows\n", rowsDone);
+  
+  if (rowsDone <= 0) {
+    Serial.println("BMP decode failed - no rows rendered");
+    return false;
+  }
+  
   Serial.println("Calling epd.update()...");
   epd.update();
   Serial.println("BMP rendered successfully");
   return true;
+}
+
+ImageFetchResult fetchImageWithRetry(EPaper& epd, FirmwareState& state, bool isColdBoot) {
+  const uint32_t BACKOFF_MS[] = {0, 1000, 2000};
+  const int MAX_RETRIES = 3;
+
+  for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      Serial.printf("Retry attempt %d/%d, waiting %u ms...\n", attempt, MAX_RETRIES - 1, BACKOFF_MS[attempt]);
+      delay(BACKOFF_MS[attempt]);
+    }
+
+    Serial.printf("Image fetch attempt %d/%d\n", attempt + 1, MAX_RETRIES);
+    
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("WiFi disconnected");
+      ImageFetchResult result;
+      result.success = false;
+      result.errorCode = ErrorCode::WIFI_CONNECT_FAILED;
+      return result;
+    }
+
+    // Attempt the original fetchAndDisplayImage logic inline
+    bool shouldFullFetch = false;
+    bool intervalReached = false;
+    bool attemptFailed = false;
+    ErrorCode errorCode = ErrorCode::NONE;
+
+    if (isColdBoot) {
+      Serial.println("Cold boot - fetching full image");
+      shouldFullFetch = true;
+    } else {
+      uint32_t sleptIntervalSeconds = (state.refreshIntervalSeconds > 0)
+          ? state.refreshIntervalSeconds
+          : getDefaultRefreshInterval();
+      uint32_t fullFetchIntervalSeconds = getFullFetchIntervalSeconds();
+
+      state.wakeCounter++;
+      uint64_t elapsedSinceLastFullFetch =
+          (uint64_t)state.elapsedFullFetchSeconds + (uint64_t)sleptIntervalSeconds;
+      if (elapsedSinceLastFullFetch > fullFetchIntervalSeconds) {
+        elapsedSinceLastFullFetch = fullFetchIntervalSeconds;
+      }
+      state.elapsedFullFetchSeconds = (uint32_t)elapsedSinceLastFullFetch;
+
+      saveWakeCounterToEEPROM(state.wakeCounter);
+      saveElapsedFullFetchSecondsToEEPROM(state.elapsedFullFetchSeconds);
+      Serial.printf("Wake #%u, slept %u sec, elapsed since last full fetch %u/%u sec\n",
+                    state.wakeCounter,
+                    sleptIntervalSeconds,
+                    state.elapsedFullFetchSeconds,
+                    fullFetchIntervalSeconds);
+
+      if (state.elapsedFullFetchSeconds >= fullFetchIntervalSeconds) {
+        Serial.println("Full fetch interval reached");
+        shouldFullFetch = true;
+        intervalReached = true;
+      } else {
+        Serial.println("Checking for changes...");
+        ImageDiffResult diff = fetchImageDiff();
+        if (diff.currentChecksum.isEmpty() && diff.previousChecksum.isEmpty()) {
+          Serial.println("Failed to fetch diff");
+          attemptFailed = true;
+          errorCode = ErrorCode::API_JSON_ERROR;
+        } else {
+          if (diff.refreshIntervalSeconds > 0) {
+            state.refreshIntervalSeconds = diff.refreshIntervalSeconds;
+            saveRefreshIntervalToEEPROM(diff.refreshIntervalSeconds);
+            Serial.printf("Updated refresh interval to %u seconds\n", diff.refreshIntervalSeconds);
+          }
+          if (!diff.currentChecksum.isEmpty() && diff.currentChecksum == state.storedChecksum) {
+            Serial.println("No changes detected");
+            ImageFetchResult result;
+            result.success = true;
+            result.errorCode = ErrorCode::NONE;
+            return result;
+          }
+          shouldFullFetch = true;
+        }
+      }
+    }
+
+    if (attemptFailed) {
+      if (attempt < MAX_RETRIES - 1) {
+        saveErrorToEEPROM(errorCode, millis() / 1000);
+        continue;
+      } else {
+        ImageFetchResult result;
+        result.success = false;
+        result.errorCode = errorCode;
+        saveErrorToEEPROM(errorCode, millis() / 1000);
+        return result;
+      }
+    }
+
+    if (shouldFullFetch) {
+      Serial.println("Fetching full image...");
+      bool success = fetchRawImageAndDisplay(epd);
+      if (success) {
+        ImageDiffResult diff = fetchImageDiff();
+        state.storedChecksum = diff.currentChecksum;
+        state.previousChecksum = diff.previousChecksum;
+        if (diff.refreshIntervalSeconds > 0) {
+          state.refreshIntervalSeconds = diff.refreshIntervalSeconds;
+          saveRefreshIntervalToEEPROM(diff.refreshIntervalSeconds);
+          Serial.printf("Updated refresh interval to %u seconds\n", diff.refreshIntervalSeconds);
+        }
+        state.elapsedFullFetchSeconds = 0;
+        state.wakeCounter = 0;
+        saveChecksumToEEPROM(state.storedChecksum);
+        saveElapsedFullFetchSecondsToEEPROM(state.elapsedFullFetchSeconds);
+        saveWakeCounterToEEPROM(state.wakeCounter);
+        state.hasValidImage = true;
+        Serial.println("Full fetch completed - reset elapsed full-refresh timer");
+        ImageFetchResult result;
+        result.success = true;
+        result.errorCode = ErrorCode::NONE;
+        return result;
+      } else {
+        Serial.println("Full fetch failed - retrying");
+        if (attempt < MAX_RETRIES - 1) {
+          saveErrorToEEPROM(ErrorCode::INVALID_BMP, millis() / 1000);
+          continue;
+        } else {
+          ImageFetchResult result;
+          result.success = false;
+          result.errorCode = ErrorCode::INVALID_BMP;
+          saveErrorToEEPROM(ErrorCode::INVALID_BMP, millis() / 1000);
+          return result;
+        }
+      }
+    }
+  }
+
+  ImageFetchResult result;
+  result.success = false;
+  result.errorCode = ErrorCode::UNKNOWN;
+  saveErrorToEEPROM(ErrorCode::UNKNOWN, millis() / 1000);
+  return result;
 }
 
 void fetchAndDisplayImage(EPaper& epd, FirmwareState& state, bool isColdBoot) {
@@ -200,75 +364,8 @@ void fetchAndDisplayImage(EPaper& epd, FirmwareState& state, bool isColdBoot) {
     return;
   }
 
-  bool shouldFullFetch = false;
-  bool intervalReached = false;
-
-  if (isColdBoot) {
-    Serial.println("Cold boot - fetching full image");
-    shouldFullFetch = true;
-  } else {
-    uint32_t sleptIntervalSeconds = (state.refreshIntervalSeconds > 0)
-        ? state.refreshIntervalSeconds
-        : getDefaultRefreshInterval();
-    uint32_t fullFetchIntervalSeconds = getFullFetchIntervalSeconds();
-
-    state.wakeCounter++;
-    uint64_t elapsedSinceLastFullFetch =
-        (uint64_t)state.elapsedFullFetchSeconds + (uint64_t)sleptIntervalSeconds;
-    if (elapsedSinceLastFullFetch > fullFetchIntervalSeconds) {
-      elapsedSinceLastFullFetch = fullFetchIntervalSeconds;
-    }
-    state.elapsedFullFetchSeconds = (uint32_t)elapsedSinceLastFullFetch;
-
-    saveWakeCounterToEEPROM(state.wakeCounter);
-    saveElapsedFullFetchSecondsToEEPROM(state.elapsedFullFetchSeconds);
-    Serial.printf("Wake #%u, slept %u sec, elapsed since last full fetch %u/%u sec\n",
-                  state.wakeCounter,
-                  sleptIntervalSeconds,
-                  state.elapsedFullFetchSeconds,
-                  fullFetchIntervalSeconds);
-
-    if (state.elapsedFullFetchSeconds >= fullFetchIntervalSeconds) {
-      Serial.println("Full fetch interval reached");
-      shouldFullFetch = true;
-      intervalReached = true;
-    } else {
-      Serial.println("Checking for changes...");
-      ImageDiffResult diff = fetchImageDiff();
-      if (diff.refreshIntervalSeconds > 0) {
-        state.refreshIntervalSeconds = diff.refreshIntervalSeconds;
-        saveRefreshIntervalToEEPROM(diff.refreshIntervalSeconds);
-        Serial.printf("Updated refresh interval to %u seconds\n", diff.refreshIntervalSeconds);
-      }
-      if (!diff.currentChecksum.isEmpty() && diff.currentChecksum == state.storedChecksum) {
-        Serial.println("No changes detected");
-        return;
-      }
-      shouldFullFetch = true;
-    }
-  }
-
-  if (shouldFullFetch) {
-    Serial.println("Fetching full image...");
-    bool success = fetchRawImageAndDisplay(epd);
-    if (success) {
-      ImageDiffResult diff = fetchImageDiff();
-      state.storedChecksum = diff.currentChecksum;
-      state.previousChecksum = diff.previousChecksum;
-      if (diff.refreshIntervalSeconds > 0) {
-        state.refreshIntervalSeconds = diff.refreshIntervalSeconds;
-        saveRefreshIntervalToEEPROM(diff.refreshIntervalSeconds);
-        Serial.printf("Updated refresh interval to %u seconds\n", diff.refreshIntervalSeconds);
-      }
-      state.elapsedFullFetchSeconds = 0;
-      state.wakeCounter = 0;
-      saveChecksumToEEPROM(state.storedChecksum);
-      saveElapsedFullFetchSecondsToEEPROM(state.elapsedFullFetchSeconds);
-      saveWakeCounterToEEPROM(state.wakeCounter);
-      state.hasValidImage = true;
-      Serial.println("Full fetch completed - reset elapsed full-refresh timer");
-    } else if (intervalReached) {
-      Serial.println("Full fetch failed - keeping elapsed timer so interval is retried next wake");
-    }
+  ImageFetchResult result = fetchImageWithRetry(epd, state, isColdBoot);
+  if (!result.success) {
+    Serial.printf("Image fetch failed after all retries. Error code: %u\n", static_cast<uint16_t>(result.errorCode));
   }
 }
